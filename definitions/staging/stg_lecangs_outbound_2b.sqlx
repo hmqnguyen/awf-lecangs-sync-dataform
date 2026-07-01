@@ -1,0 +1,32 @@
+config {
+  type: "table",
+  schema: dataform.projectConfig.vars.staging_dataset,
+  description: "Staging outbound 2B (B2B) header — dedupe theo order_no. Giữ goods_list + expense_list (JSON) để fact UNNEST.",
+  tags: ["staging", "lecangs"],
+  bigquery: { partitionBy: "create_date", clusterBy: ["order_no"] }
+}
+
+WITH parsed AS (
+  SELECT
+    brand,
+    _ingested_at,
+    JSON_VALUE(raw_payload, '$.orderNo')                    AS order_no,
+    JSON_VALUE(raw_payload, '$.referenceNo')                AS reference_no,
+    JSON_VALUE(raw_payload, '$.asnNo')                      AS asn_no,
+    JSON_VALUE(raw_payload, '$.poNo')                       AS po_no,
+    JSON_VALUE(raw_payload, '$.warehouseCode')              AS warehouse_code,
+    JSON_VALUE(raw_payload, '$.status')                     AS status_code,
+    SAFE.PARSE_TIMESTAMP('%Y-%m-%dT%H:%M:%E*S', JSON_VALUE(raw_payload, '$.createTime'))   AS create_time,
+    SAFE.PARSE_TIMESTAMP('%Y-%m-%dT%H:%M:%E*S', JSON_VALUE(raw_payload, '$.deliveryTime')) AS delivery_time,
+    SAFE.PARSE_DATE('%Y-%m-%d', JSON_VALUE(raw_payload, '$.pickUpDate'))                   AS pickup_date,
+    JSON_VALUE(raw_payload, '$.trackingSearchUrl')          AS tracking_search_url,
+    JSON_QUERY(raw_payload, '$.omsTobOrderGoodsVoList')     AS goods_list,     -- fact UNNEST
+    JSON_QUERY(raw_payload, '$.expenseList')                AS expense_list    -- fact UNNEST
+  FROM ${ref("raw_lecangs_outbound_2b")}
+),
+ranked AS (
+  SELECT *, DATE(create_time) AS create_date,
+    ROW_NUMBER() OVER (PARTITION BY order_no ORDER BY _ingested_at DESC) AS rn
+  FROM parsed
+)
+SELECT * EXCEPT(rn, _ingested_at) FROM ranked WHERE rn = 1

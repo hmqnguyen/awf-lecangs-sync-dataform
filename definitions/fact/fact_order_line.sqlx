@@ -1,0 +1,58 @@
+config {
+  type: "incremental",
+  schema: dataform.projectConfig.vars.fact_dataset,
+  description: "Fact order line — dòng hàng xuất, hợp nhất 2C (packageList→goodsList) và 2B (omsTobOrderGoodsVoList). Grain: order_type × order_no × package × goods_code.",
+  tags: ["fact", "lecangs"],
+  uniqueKey: ["line_uid"],
+  bigquery: {
+    partitionBy: "order_date",
+    clusterBy: ["order_type", "goods_code"],
+    updatePartitionFilter: "order_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 35 DAY)"
+  }
+}
+
+WITH lines_2c AS (
+  SELECT
+    o.brand,
+    '2C'                                            AS order_type,
+    o.toc_order_no                                  AS order_no,
+    JSON_VALUE(pkg, '$.packageNo')                  AS package_no,
+    JSON_VALUE(g, '$.goodsCode')                    AS goods_code,
+    SAFE_CAST(JSON_VALUE(g, '$.quantity') AS INT64) AS quantity,
+    o.warehouse_code,
+    o.platform,
+    o.store,
+    o.dest_country,
+    o.dest_state,
+    o.create_date                                   AS order_date
+  FROM ${ref("stg_lecangs_outbound_2c")} AS o,
+       UNNEST(JSON_QUERY_ARRAY(o.package_list)) AS pkg,
+       UNNEST(JSON_QUERY_ARRAY(pkg, '$.goodsList')) AS g
+),
+lines_2b AS (
+  SELECT
+    o.brand,
+    '2B'                                              AS order_type,
+    o.order_no,
+    CAST(NULL AS STRING)                              AS package_no,
+    JSON_VALUE(g, '$.goodsCode')                      AS goods_code,
+    SAFE_CAST(JSON_VALUE(g, '$.actualNum') AS INT64)  AS quantity,
+    o.warehouse_code,
+    CAST(NULL AS STRING)                              AS platform,
+    CAST(NULL AS STRING)                              AS store,
+    CAST(NULL AS STRING)                              AS dest_country,
+    CAST(NULL AS STRING)                              AS dest_state,
+    o.create_date                                     AS order_date
+  FROM ${ref("stg_lecangs_outbound_2b")} AS o,
+       UNNEST(JSON_QUERY_ARRAY(o.goods_list)) AS g
+),
+unioned AS (
+  SELECT * FROM lines_2c
+  UNION ALL
+  SELECT * FROM lines_2b
+)
+SELECT
+  TO_HEX(MD5(CONCAT(order_type, '|', order_no, '|', IFNULL(package_no, ''), '|', IFNULL(goods_code, '')))) AS line_uid,
+  *
+FROM unioned
+${when(incremental(), `WHERE order_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 35 DAY)`)}

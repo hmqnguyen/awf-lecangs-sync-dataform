@@ -1,0 +1,23 @@
+config {
+  type: "incremental",
+  schema: dataform.projectConfig.vars.master_dataset,
+  description: "Master inventory flow — ledger bất biến, tích luỹ toàn bộ lịch sử theo serial_no (staging chỉ giữ cửa sổ gần đây; master giữ hết).",
+  tags: ["master", "lecangs"],
+  uniqueKey: ["serial_no"],
+  bigquery: { partitionBy: "flow_date", clusterBy: ["goods_code"] }
+}
+
+-- serial_no bất biến → uniqueKey đảm bảo không trùng; bản ghi mới chỉ INSERT thêm.
+SELECT
+  brand,
+  serial_no,
+  flow_date,
+  warehouse_code,
+  business_no,
+  business_type,
+  goods_code,
+  lecangs_code,
+  qty_delta,
+  update_time
+FROM ${ref("stg_lecangs_inventory_flow")}
+${when(incremental(), `WHERE flow_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY) OR flow_date IS NULL`)}

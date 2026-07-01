@@ -1,0 +1,28 @@
+config {
+  type: "incremental",
+  schema: dataform.projectConfig.vars.master_dataset,
+  description: "Master inventory — giữ snapshot tồn kho theo TỪNG NGÀY. Cùng ngày: ghi đè (bản mới nhất). Khác ngày: giữ lại như version lịch sử.",
+  tags: ["master", "lecangs"],
+  uniqueKey: ["snapshot_date", "warehouse_code", "goods_code"],
+  bigquery: { partitionBy: "snapshot_date", clusterBy: ["goods_code"] }
+}
+
+-- uniqueKey (snapshot_date, warehouse_code, goods_code) tự quyết định ghi đè/giữ:
+--   cùng ngày+kho+sku → UPDATE (ghi đè); khác ngày → INSERT (version mới).
+SELECT
+  brand,
+  snapshot_date,
+  warehouse_code,
+  goods_code,
+  lecangs_code,
+  en_name,
+  cn_name,
+  goods_num,
+  warehouse_date,
+  inventory_age,
+  wms_length, wms_width, wms_height, wms_weight, weight_unit,
+  volume,
+  measure_unit,
+  measurement_unit
+FROM ${ref("stg_lecangs_inventory")}
+${when(incremental(), `WHERE snapshot_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)`)}

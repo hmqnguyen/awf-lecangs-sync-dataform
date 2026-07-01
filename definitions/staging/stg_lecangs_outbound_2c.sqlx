@@ -1,0 +1,41 @@
+config {
+  type: "table",
+  schema: dataform.projectConfig.vars.staging_dataset,
+  description: "Staging outbound 2C (DTC) header — dedupe theo toc_order_no. Giữ package_list (JSON) để fact UNNEST goods/expense.",
+  tags: ["staging", "lecangs"],
+  bigquery: { partitionBy: "create_date", clusterBy: ["toc_order_no"] }
+}
+
+WITH parsed AS (
+  SELECT
+    brand,
+    _ingested_at,
+    JSON_VALUE(raw_payload, '$.tocOrderNo')                 AS toc_order_no,
+    JSON_VALUE(raw_payload, '$.referenceNo')                AS reference_no,
+    JSON_VALUE(raw_payload, '$.platform')                   AS platform,
+    JSON_VALUE(raw_payload, '$.platformNo')                 AS platform_no,
+    JSON_VALUE(raw_payload, '$.store')                      AS store,
+    JSON_VALUE(raw_payload, '$.poNo')                       AS po_no,
+    JSON_VALUE(raw_payload, '$.warehouseCode')              AS warehouse_code,
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.status') AS INT64) AS status_code,
+    JSON_VALUE(raw_payload, '$.masterTrackingNos')          AS master_tracking_nos,
+    JSON_VALUE(raw_payload, '$.trackingNos')                AS tracking_nos,
+    JSON_VALUE(raw_payload, '$.carrierName')                AS carrier_name,
+    JSON_VALUE(raw_payload, '$.saleProductCode')            AS sale_product_code,
+    SAFE.PARSE_TIMESTAMP('%Y-%m-%dT%H:%M:%E*S', JSON_VALUE(raw_payload, '$.createTime'))   AS create_time,
+    SAFE.PARSE_TIMESTAMP('%Y-%m-%dT%H:%M:%E*S', JSON_VALUE(raw_payload, '$.deliveryTime')) AS delivery_time,
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.totalExpense') AS NUMERIC) AS total_expense,
+    JSON_VALUE(raw_payload, '$.totalExpenseCurrency')       AS total_expense_currency,
+    JSON_VALUE(raw_payload, '$.omsTocOrderConsigneeVo.countryCode') AS dest_country,
+    JSON_VALUE(raw_payload, '$.omsTocOrderConsigneeVo.province')    AS dest_state,
+    JSON_VALUE(raw_payload, '$.omsTocOrderConsigneeVo.city')        AS dest_city,
+    JSON_VALUE(raw_payload, '$.omsTocOrderConsigneeVo.postalCode')  AS dest_postal,
+    JSON_QUERY(raw_payload, '$.packageList')                AS package_list   -- giữ để fact UNNEST
+  FROM ${ref("raw_lecangs_outbound_2c")}
+),
+ranked AS (
+  SELECT *, DATE(create_time) AS create_date,
+    ROW_NUMBER() OVER (PARTITION BY toc_order_no ORDER BY _ingested_at DESC) AS rn
+  FROM parsed
+)
+SELECT * EXCEPT(rn, _ingested_at) FROM ranked WHERE rn = 1

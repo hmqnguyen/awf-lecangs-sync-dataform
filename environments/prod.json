@@ -1,0 +1,12 @@
+{
+  "defaultProject": "allforwood",
+  "defaultDataset": "afw_lecangs_fact",
+  "defaultLocation": "US",
+  "defaultAssertionDataset": "afw_lecangs_fact",
+  "vars": {
+    "raw_dataset":     "afw_lecangs_raw",
+    "staging_dataset": "afw_lecangs_staging",
+    "fact_dataset":    "afw_lecangs_fact",
+    "master_dataset":  "afw_lecangs_fact"
+  }
+}

@@ -1,0 +1,33 @@
+config {
+  type: "table",
+  schema: dataform.projectConfig.vars.staging_dataset,
+  description: "Staging invoice detail (per-SKU/batch storage line) — dedupe theo detail_id.",
+  tags: ["staging", "lecangs"],
+  bigquery: { partitionBy: "billing_date", clusterBy: ["goods_code"] }
+}
+
+WITH parsed AS (
+  SELECT
+    brand,
+    _ingested_at,
+    JSON_VALUE(raw_payload, '$.id')                         AS detail_id,
+    JSON_VALUE(raw_payload, '$.warehouseCode')              AS warehouse_code,
+    JSON_VALUE(raw_payload, '$.businessNo')                 AS business_no,
+    JSON_VALUE(raw_payload, '$.goodsCode')                 AS goods_code,
+    JSON_VALUE(raw_payload, '$.lecangsCode')               AS lecangs_code,
+    COALESCE(
+      SAFE.PARSE_DATE('%Y-%m-%d', JSON_VALUE(raw_payload, '$.billingDate')),
+      SAFE.PARSE_DATE('%Y%m%d',   JSON_VALUE(raw_payload, '$.billingDate'))
+    )                                                        AS billing_date,
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.goodsNum') AS INT64)     AS goods_num,
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.inventoryAge') AS INT64) AS inventory_age,
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.volume') AS NUMERIC)     AS volume,
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.unitPrice') AS NUMERIC)  AS unit_price,
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.expense') AS NUMERIC)    AS expense
+  FROM ${ref("raw_lecangs_invoice_detail")}
+),
+ranked AS (
+  SELECT *, ROW_NUMBER() OVER (PARTITION BY detail_id ORDER BY _ingested_at DESC) AS rn
+  FROM parsed
+)
+SELECT * EXCEPT(rn, _ingested_at) FROM ranked WHERE rn = 1

@@ -1,0 +1,42 @@
+config {
+  type: "table",
+  schema: dataform.projectConfig.vars.staging_dataset,
+  description: "Staging inventory — parse raw_payload + dedupe theo (snapshot_date, warehouse_code, goods_code). Snapshot tồn kho.",
+  tags: ["staging", "lecangs"],
+  bigquery: { partitionBy: "snapshot_date", clusterBy: ["goods_code"] }
+}
+
+WITH parsed AS (
+  SELECT
+    brand,
+    DATE(_ingested_at)                                        AS snapshot_date,
+    _ingested_at,
+    JSON_VALUE(raw_payload, '$.businessNo')                   AS business_no,
+    JSON_VALUE(raw_payload, '$.warehouseCode')               AS warehouse_code,
+    JSON_VALUE(raw_payload, '$.goodsCode')                   AS goods_code,
+    JSON_VALUE(raw_payload, '$.lecangsCode')                 AS lecangs_code,
+    JSON_VALUE(raw_payload, '$.enName')                      AS en_name,
+    JSON_VALUE(raw_payload, '$.cnName')                      AS cn_name,
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.goodsNum') AS INT64)     AS goods_num,
+    COALESCE(
+      SAFE.PARSE_TIMESTAMP('%Y-%m-%dT%H:%M:%S', JSON_VALUE(raw_payload, '$.warehouseDate')),
+      SAFE.PARSE_TIMESTAMP('%Y-%m-%d %H:%M:%S', JSON_VALUE(raw_payload, '$.warehouseDate'))
+    )                                                          AS warehouse_date,
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.inventoryAge') AS INT64) AS inventory_age,
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.wmsLength') AS NUMERIC)  AS wms_length,
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.wmsWidth')  AS NUMERIC)  AS wms_width,
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.wmsHeight') AS NUMERIC)  AS wms_height,
+    JSON_VALUE(raw_payload, '$.measureUnit')                 AS measure_unit,
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.wmsWeight') AS NUMERIC)  AS wms_weight,
+    JSON_VALUE(raw_payload, '$.weightUnit')                 AS weight_unit,
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.volume') AS NUMERIC)     AS volume,
+    JSON_VALUE(raw_payload, '$.measurementUnit')            AS measurement_unit
+  FROM ${ref("raw_lecangs_inventory")}
+),
+ranked AS (
+  SELECT *, ROW_NUMBER() OVER (
+    PARTITION BY snapshot_date, warehouse_code, goods_code ORDER BY _ingested_at DESC
+  ) AS rn
+  FROM parsed
+)
+SELECT * EXCEPT(rn, _ingested_at) FROM ranked WHERE rn = 1

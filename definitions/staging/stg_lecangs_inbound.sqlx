@@ -1,0 +1,32 @@
+config {
+  type: "table",
+  schema: dataform.projectConfig.vars.staging_dataset,
+  description: "Staging inbound ASN — header × details[] denormalized, dedupe theo (asn_no, goods_code).",
+  tags: ["staging", "lecangs"],
+  bigquery: { partitionBy: "create_date", clusterBy: ["goods_code"] }
+}
+
+WITH parsed AS (
+  SELECT
+    r.brand,
+    r._ingested_at,
+    JSON_VALUE(r.raw_payload, '$.asnNo')                     AS asn_no,
+    SAFE_CAST(JSON_VALUE(r.raw_payload, '$.asnType') AS INT64) AS asn_type,
+    JSON_VALUE(r.raw_payload, '$.deliveryWarehouse')        AS warehouse_code,
+    JSON_VALUE(r.raw_payload, '$.NoNo')                     AS po_no,
+    JSON_VALUE(r.raw_payload, '$.erpNo')                    AS erp_no,
+    SAFE_CAST(JSON_VALUE(r.raw_payload, '$.status') AS INT64) AS status_code,
+    SAFE.PARSE_TIMESTAMP('%Y-%m-%d %H:%M:%S', JSON_VALUE(r.raw_payload, '$.createTime'))    AS create_time,
+    SAFE.PARSE_TIMESTAMP('%Y-%m-%d %H:%M:%S', JSON_VALUE(r.raw_payload, '$.receivingDate')) AS receiving_date,
+    JSON_VALUE(det, '$.goodsCode')                          AS goods_code,
+    SAFE_CAST(JSON_VALUE(det, '$.goodsNum') AS INT64)       AS expected_qty,
+    SAFE_CAST(JSON_VALUE(det, '$.receivingNum') AS INT64)   AS received_qty
+  FROM ${ref("raw_lecangs_inbound")} AS r,
+       UNNEST(JSON_QUERY_ARRAY(r.raw_payload, '$.details')) AS det
+),
+ranked AS (
+  SELECT *, DATE(create_time) AS create_date,
+    ROW_NUMBER() OVER (PARTITION BY asn_no, goods_code ORDER BY _ingested_at DESC) AS rn
+  FROM parsed
+)
+SELECT * EXCEPT(rn, _ingested_at) FROM ranked WHERE rn = 1

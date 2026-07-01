@@ -1,0 +1,75 @@
+config {
+  type: "incremental",
+  schema: dataform.projectConfig.vars.fact_dataset,
+  description: "Fact logistics cost — phí fulfillment (2C packageList.expenseList, 2B expenseList) + phí lưu kho (invoice detail). Grain: 1 dòng phí. Phân bổ về SKU là bước sau (Cost Allocation).",
+  tags: ["fact", "lecangs"],
+  uniqueKey: ["cost_uid"],
+  bigquery: {
+    partitionBy: "cost_date",
+    clusterBy: ["cost_type", "warehouse_code"],
+    updatePartitionFilter: "cost_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 45 DAY)"
+  }
+}
+
+WITH exp_2c AS (
+  SELECT
+    o.brand,
+    'fulfillment'                                     AS cost_type,
+    '2C'                                              AS source,
+    COALESCE(DATE(o.delivery_time), DATE(o.create_time)) AS cost_date,
+    o.warehouse_code,
+    CAST(NULL AS STRING)                              AS goods_code,     -- phí ở mức package, chưa phân bổ SKU
+    o.toc_order_no                                    AS ref_no,
+    JSON_VALUE(pkg, '$.packageNo')                    AS package_no,
+    JSON_VALUE(e, '$.expenseCode')                    AS expense_code,
+    JSON_VALUE(e, '$.expenseEnName')                  AS expense_en,
+    SAFE_CAST(JSON_VALUE(e, '$.expense') AS NUMERIC)  AS amount,
+    o.total_expense_currency                          AS currency
+  FROM ${ref("stg_lecangs_outbound_2c")} AS o,
+       UNNEST(JSON_QUERY_ARRAY(o.package_list)) AS pkg,
+       UNNEST(JSON_QUERY_ARRAY(pkg, '$.expenseList')) AS e
+),
+exp_2b AS (
+  SELECT
+    o.brand,
+    'fulfillment'                                     AS cost_type,
+    '2B'                                              AS source,
+    COALESCE(DATE(o.delivery_time), DATE(o.create_time)) AS cost_date,
+    o.warehouse_code,
+    CAST(NULL AS STRING)                              AS goods_code,
+    o.order_no                                        AS ref_no,
+    CAST(NULL AS STRING)                              AS package_no,
+    JSON_VALUE(e, '$.expenseCode')                    AS expense_code,
+    JSON_VALUE(e, '$.expenseEnName')                  AS expense_en,
+    SAFE_CAST(JSON_VALUE(e, '$.expense') AS NUMERIC)  AS amount,
+    CAST(NULL AS STRING)                              AS currency
+  FROM ${ref("stg_lecangs_outbound_2b")} AS o,
+       UNNEST(JSON_QUERY_ARRAY(o.expense_list)) AS e
+),
+storage AS (
+  SELECT
+    brand,
+    'storage'                                         AS cost_type,
+    'STORAGE'                                         AS source,
+    billing_date                                      AS cost_date,
+    warehouse_code,
+    goods_code,                                       -- storage có mức SKU
+    business_no                                       AS ref_no,
+    CAST(NULL AS STRING)                              AS package_no,
+    'STORAGE'                                         AS expense_code,
+    'Daily storage rent'                              AS expense_en,
+    expense                                           AS amount,
+    CAST(NULL AS STRING)                              AS currency
+  FROM ${ref("stg_lecangs_invoice_detail")}
+),
+unioned AS (
+  SELECT * FROM exp_2c
+  UNION ALL SELECT * FROM exp_2b
+  UNION ALL SELECT * FROM storage
+)
+SELECT
+  TO_HEX(MD5(CONCAT(source, '|', IFNULL(ref_no, ''), '|', IFNULL(package_no, ''), '|',
+                    IFNULL(expense_code, ''), '|', IFNULL(goods_code, ''), '|', CAST(cost_date AS STRING)))) AS cost_uid,
+  *
+FROM unioned
+${when(incremental(), `WHERE cost_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 45 DAY)`)}
