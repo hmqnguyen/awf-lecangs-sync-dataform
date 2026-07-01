@@ -1,0 +1,31 @@
+config {
+  type: "table",
+  schema: dataform.projectConfig.vars.staging_dataset,
+  description: "Staging warehouse rent summary (daily-rent) — dedupe theo daily_expense_id.",
+  tags: ["staging", "lecangs"],
+  bigquery: { partitionBy: "billing_date", clusterBy: ["warehouse_code"] }
+}
+
+WITH parsed AS (
+  SELECT
+    brand,
+    _ingested_at,
+    JSON_VALUE(raw_payload, '$.id')                         AS daily_expense_id,
+    JSON_VALUE(raw_payload, '$.customCode')                 AS custom_code,
+    JSON_VALUE(raw_payload, '$.warehouseCode')              AS warehouse_code,
+    JSON_VALUE(raw_payload, '$.dailyExpenseNo')             AS daily_expense_no,
+    SAFE.PARSE_DATE('%Y%m%d', JSON_VALUE(raw_payload, '$.billingDate')) AS billing_date,
+    SAFE.PARSE_TIMESTAMP('%Y-%m-%dT%H:%M:%E*S', JSON_VALUE(raw_payload, '$.billingTime')) AS billing_time,
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.expense') AS NUMERIC)       AS expense,
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.deductExpense') AS NUMERIC) AS deduct_expense,
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.returnExpense') AS NUMERIC) AS return_expense,
+    JSON_VALUE(raw_payload, '$.currency')                   AS currency,
+    JSON_VALUE(raw_payload, '$.costTypeEN')                 AS cost_type_en,
+    JSON_VALUE(raw_payload, '$.costTypeCN')                 AS cost_type_cn
+  FROM ${ref("raw_lecangs_warehouse_rent_summary")}
+),
+ranked AS (
+  SELECT *, ROW_NUMBER() OVER (PARTITION BY daily_expense_id ORDER BY _ingested_at DESC) AS rn
+  FROM parsed
+)
+SELECT * EXCEPT(rn, _ingested_at) FROM ranked WHERE rn = 1

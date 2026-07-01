@@ -11,8 +11,8 @@ const rawTables = [
   "raw_lecangs_outbound_2c",
   "raw_lecangs_outbound_2b",
   "raw_lecangs_inbound",
-  "raw_lecangs_invoice_summary",
-  "raw_lecangs_invoice_detail",
+  "raw_lecangs_warehouse_rent_summary",
+  "raw_lecangs_warehouse_rent_detail",
 ];
 
 rawTables.forEach(name => {

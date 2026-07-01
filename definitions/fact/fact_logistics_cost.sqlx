@@ -1,7 +1,7 @@
 config {
   type: "incremental",
   schema: dataform.projectConfig.vars.fact_dataset,
-  description: "Fact logistics cost — phí fulfillment (2C packageList.expenseList, 2B expenseList) + phí lưu kho (invoice detail). Grain: 1 dòng phí. Phân bổ về SKU là bước sau (Cost Allocation).",
+  description: "Fact logistics cost — phí fulfillment (2C packageList.expenseList, 2B expenseList) + phí lưu kho (warehouse rent detail). Grain: 1 dòng phí. Phân bổ về SKU là bước sau (Cost Allocation).",
   tags: ["fact", "lecangs"],
   uniqueKey: ["cost_uid"],
   bigquery: {
@@ -60,7 +60,7 @@ storage AS (
     'Daily storage rent'                              AS expense_en,
     expense                                           AS amount,
     CAST(NULL AS STRING)                              AS currency
-  FROM ${ref("stg_lecangs_invoice_detail")}
+  FROM ${ref("stg_lecangs_warehouse_rent_detail")}
 ),
 unioned AS (
   SELECT * FROM exp_2c
