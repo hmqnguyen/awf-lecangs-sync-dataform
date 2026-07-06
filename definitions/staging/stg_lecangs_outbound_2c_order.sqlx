@@ -8,7 +8,7 @@ config {
 
 WITH latest AS (
   SELECT *, ROW_NUMBER() OVER (
-    PARTITION BY JSON_VALUE(raw_payload, '$.tocOrderNo') ORDER BY _ingested_at DESC
+    PARTITION BY JSON_VALUE(raw_payload, '$.tocOrderNo') ORDER BY ${lecangs.ts("JSON_VALUE(raw_payload, '$.updateTime')")} DESC, _ingested_at DESC
   ) AS rn
   FROM ${ref("raw_lecangs_outbound_2c")}
 )

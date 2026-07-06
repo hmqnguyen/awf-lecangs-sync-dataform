@@ -58,7 +58,7 @@ WITH parsed AS (
 ),
 ranked AS (
   SELECT *, DATE(update_time) AS flow_date,
-    ROW_NUMBER() OVER (PARTITION BY serial_no ORDER BY _ingested_at DESC) AS rn
+    ROW_NUMBER() OVER (PARTITION BY serial_no ORDER BY update_time DESC, _ingested_at DESC) AS rn
   FROM parsed
 )
 SELECT * EXCEPT(rn, _ingested_at) FROM ranked WHERE rn = 1
