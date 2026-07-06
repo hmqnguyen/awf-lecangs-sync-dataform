@@ -1,7 +1,7 @@
 config {
   type: "table",
   schema: dataform.projectConfig.vars.staging_dataset,
-  description: "Staging inventory flow (ledger +/-) — parse + dedupe theo serial_no (bản ghi bất biến).",
+  description: "Staging inventory flow (ledger +/-) — parse + dedupe theo serial_no (bản ghi bất biến). Đầy đủ field theo payload thật.",
   tags: ["staging", "lecangs"],
   bigquery: { partitionBy: "flow_date", clusterBy: ["goods_code"] }
 }
@@ -10,17 +10,50 @@ WITH parsed AS (
   SELECT
     brand,
     _ingested_at,
-    JSON_VALUE(raw_payload, '$.serialNo')                    AS serial_no,
-    JSON_VALUE(raw_payload, '$.warehouseCode')              AS warehouse_code,
-    JSON_VALUE(raw_payload, '$.businessNo')                 AS business_no,
+    -- keys
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.id') AS INT64)          AS flow_id,        -- id bản ghi (long)
+    JSON_VALUE(raw_payload, '$.serialNo')                        AS serial_no,       -- PK ledger (bất biến)
+    JSON_VALUE(raw_payload, '$.warehouseCode')                  AS warehouse_code,
+    JSON_VALUE(raw_payload, '$.businessNo')                     AS business_no,      -- số chứng từ nguồn (ASN/2C/2B...)
     SAFE_CAST(JSON_VALUE(raw_payload, '$.businessType') AS INT64) AS business_type,
-    JSON_VALUE(raw_payload, '$.goodsCode')                 AS goods_code,
-    JSON_VALUE(raw_payload, '$.lecangsCode')               AS lecangs_code,
-    SAFE_CAST(JSON_VALUE(raw_payload, '$.goodsNum') AS INT64)     AS qty_delta,
-    COALESCE(
-      SAFE.PARSE_TIMESTAMP('%Y-%m-%dT%H:%M:%S', JSON_VALUE(raw_payload, '$.updateTime')),
-      SAFE.PARSE_TIMESTAMP('%Y-%m-%d %H:%M:%S', JSON_VALUE(raw_payload, '$.updateTime'))
-    )                                                        AS update_time
+    CASE SAFE_CAST(JSON_VALUE(raw_payload, '$.businessType') AS INT64)
+      WHEN 101901 THEN '2C_order'
+      WHEN 101902 THEN 'processing'
+      WHEN 101903 THEN 'inventory_abnormality'
+      WHEN 101904 THEN 'stocktaking'
+      WHEN 101905 THEN 'destruction'
+      WHEN 101906 THEN 'inventory_adjustment_order'
+      WHEN 101907 THEN 'inbound'          -- Shipping Notice (nhập)
+      WHEN 101908 THEN '2B_order'
+      WHEN 101909 THEN 'inventory_adjustment'
+      WHEN 101910 THEN '4spl_order'
+      WHEN 101911 THEN 'transfer'
+      ELSE 'other'
+    END                                                          AS business_type_label,
+
+    -- product
+    JSON_VALUE(raw_payload, '$.goodsCode')                      AS goods_code,       -- AFW SKU
+    JSON_VALUE(raw_payload, '$.lecangsCode')                    AS lecangs_code,
+    JSON_VALUE(raw_payload, '$.enName')                         AS en_name,
+    JSON_VALUE(raw_payload, '$.cnName')                         AS cn_name,
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.goodsLevel') AS INT64)  AS goods_level,      -- 101301... (phẩm cấp/grade)
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.validStatus') AS INT64) AS valid_status,
+
+    -- change & context
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.goodsNum') AS INT64)    AS qty_delta,        -- +tăng / -giảm
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.status') AS INT64)      AS status_code,
+    JSON_VALUE(raw_payload, '$.reason')                         AS reason,           -- lý do (cho adjustment)
+    JSON_VALUE(raw_payload, '$.remark')                        AS remark,
+    JSON_VALUE(raw_payload, '$.customCode')                    AS custom_code,      -- mã chủ hàng
+    JSON_VALUE(raw_payload, '$.companyAbbreviation')           AS company_abbreviation,
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.deleted') AS INT64)     AS deleted,          -- cờ soft-delete (thường null)
+
+    -- audit / time (updateTime = giờ cập nhật; createTime thường null)
+    JSON_VALUE(raw_payload, '$.createUser')                    AS create_user,
+    JSON_VALUE(raw_payload, '$.updateUser')                    AS update_user,
+    ${lecangs.ts("JSON_VALUE(raw_payload, '$.warehouseDate')")} AS warehouse_date,
+    ${lecangs.ts("JSON_VALUE(raw_payload, '$.createTime')")}    AS create_time,
+    ${lecangs.ts("JSON_VALUE(raw_payload, '$.updateTime')")}    AS update_time
   FROM ${ref("raw_lecangs_inventory_flow")}
 ),
 ranked AS (

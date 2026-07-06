@@ -21,9 +21,9 @@ SELECT
   JSON_VALUE(raw_payload, '$.poNo')                         AS po_no,
   SAFE_CAST(JSON_VALUE(raw_payload, '$.allowableUllage') AS INT64) AS allowable_ullage,
   SAFE_CAST(JSON_VALUE(raw_payload, '$.status') AS INT64)   AS status_code,
-  ${lecangs.ts("JSON_VALUE(raw_payload, '$.createTime')")}   AS create_time,
-  ${lecangs.ts("JSON_VALUE(raw_payload, '$.deliveryTime')")} AS delivery_time,
-  DATE(${lecangs.ts("JSON_VALUE(raw_payload, '$.pickUpDate')")}) AS pickup_date,
+  ${lecangs.ts("JSON_VALUE(raw_payload, '$.createTime')")}   AS create_time,   -- 北京/Beijing time
+  ${lecangs.ts("JSON_VALUE(raw_payload, '$.deliveryTime')")} AS delivery_time, -- giờ KHO (US) — dùng cho cost_date fulfillment
+  DATE(${lecangs.ts("JSON_VALUE(raw_payload, '$.pickUpDate')")}) AS pickup_date,  -- giờ KHO (US)
   JSON_VALUE(raw_payload, '$.trackingSearchUrl')            AS tracking_search_url,
   JSON_VALUE(raw_payload, '$.errorMsg')                     AS error_msg,
 
@@ -36,10 +36,12 @@ SELECT
   JSON_VALUE(raw_payload, '$.omsTobOrderConsigneeVo.province')        AS consignee_province,
   JSON_VALUE(raw_payload, '$.omsTobOrderConsigneeVo.standardProvince') AS consignee_standard_province,
   JSON_VALUE(raw_payload, '$.omsTobOrderConsigneeVo.city')            AS consignee_city,
+  JSON_VALUE(raw_payload, '$.omsTobOrderConsigneeVo.district')        AS consignee_district,
   JSON_VALUE(raw_payload, '$.omsTobOrderConsigneeVo.street1')         AS consignee_street1,
   JSON_VALUE(raw_payload, '$.omsTobOrderConsigneeVo.street2')         AS consignee_street2,
   JSON_VALUE(raw_payload, '$.omsTobOrderConsigneeVo.doorplate')       AS consignee_doorplate,
   JSON_VALUE(raw_payload, '$.omsTobOrderConsigneeVo.postalCode')      AS consignee_postal,
+  SAFE_CAST(JSON_VALUE(raw_payload, '$.omsTobOrderConsigneeVo.addressType') AS INT64) AS consignee_address_type,
 
   -- processing (omsTobOrderProcessingVo, 1:1)  — file list tách sang bảng con
   SAFE_CAST(JSON_VALUE(raw_payload, '$.omsTobOrderProcessingVo.stretchWrapping') AS INT64) AS processing_stretch_wrapping,

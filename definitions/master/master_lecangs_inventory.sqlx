@@ -3,7 +3,7 @@ config {
   schema: dataform.projectConfig.vars.master_dataset,
   description: "Master inventory — giữ snapshot tồn kho theo TỪNG NGÀY. Cùng ngày: ghi đè (bản mới nhất). Khác ngày: giữ lại như version lịch sử.",
   tags: ["master", "lecangs"],
-  uniqueKey: ["snapshot_date", "warehouse_code", "goods_code"],
+  uniqueKey: ["snapshot_date", "warehouse_code", "goods_code", "business_no", "warehouse_date"],
   bigquery: { partitionBy: "snapshot_date", clusterBy: ["goods_code"] }
 }
 
@@ -14,6 +14,7 @@ SELECT
   snapshot_date,
   warehouse_code,
   goods_code,
+  business_no,
   lecangs_code,
   en_name,
   cn_name,

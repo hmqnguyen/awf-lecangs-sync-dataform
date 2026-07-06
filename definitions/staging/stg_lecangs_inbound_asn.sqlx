@@ -16,6 +16,11 @@ SELECT
   brand,
   JSON_VALUE(raw_payload, '$.asnNo')                              AS asn_no,
   SAFE_CAST(JSON_VALUE(raw_payload, '$.asnType') AS INT64)        AS asn_type,
+  CASE SAFE_CAST(JSON_VALUE(raw_payload, '$.asnType') AS INT64)
+    WHEN 101501 THEN 'inbound'   -- container nhập (ASN-*): có flows=first-mile cost, receives, container
+    WHEN 101503 THEN 'return'    -- hàng hoàn (RL-*): flows/receives=null, không container
+    ELSE 'other'
+  END                                                             AS asn_kind,
   JSON_VALUE(raw_payload, '$.deliveryWarehouse')                 AS warehouse_code,
   JSON_VALUE(raw_payload, '$.poNo')                              AS po_no,
   JSON_VALUE(raw_payload, '$.erpNo')                             AS erp_no,
@@ -55,7 +60,6 @@ SELECT
   ${lecangs.ts("JSON_VALUE(raw_payload, '$.updateTime')")}       AS update_time,
   JSON_VALUE(raw_payload, '$.closeRemark')                      AS close_remark,
   ${lecangs.ts("JSON_VALUE(raw_payload, '$.eta')")}             AS eta,
-  SAFE_CAST(JSON_VALUE(raw_payload, '$.totalCount') AS INT64)    AS total_count,
   DATE(${lecangs.ts("JSON_VALUE(raw_payload, '$.createTime')")}) AS create_date
 FROM latest
 WHERE rn = 1

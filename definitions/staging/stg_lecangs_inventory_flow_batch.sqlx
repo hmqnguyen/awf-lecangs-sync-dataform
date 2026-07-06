@@ -1,0 +1,32 @@
+config {
+  type: "table",
+  schema: dataform.projectConfig.vars.staging_dataset,
+  description: "Staging inventory flow batch — CON của inventory_flow (flowBatchDetailVoList): biến động theo từng LÔ. PK flow_batch_id (b.$.id, bất biến), FK flow_id → inventory_flow.flow_id ($.id). raw_line giữ nguyên phần tử để không mất field.",
+  tags: ["staging", "lecangs", "inventory"],
+  bigquery: { clusterBy: ["flow_id", "batch_code"] }
+}
+
+WITH latest AS (
+  SELECT *, ROW_NUMBER() OVER (
+    PARTITION BY JSON_VALUE(raw_payload, '$.id') ORDER BY _ingested_at DESC
+  ) AS rn
+  FROM ${ref("raw_lecangs_inventory_flow")}
+),
+picked AS ( SELECT * FROM latest WHERE rn = 1 )
+SELECT
+  brand,
+  SAFE_CAST(JSON_VALUE(b, '$.id') AS INT64)                AS flow_batch_id,  -- PK: id riêng của phần tử batch (bất biến)
+  SAFE_CAST(JSON_VALUE(raw_payload, '$.id') AS INT64)      AS flow_id,        -- FK → inventory_flow.flow_id
+  JSON_VALUE(raw_payload, '$.serialNo')                    AS serial_no,      -- tham chiếu phụ (dễ đọc)
+  line_no + 1                                              AS line_no,        -- vị trí trong mảng (chỉ tham khảo, KHÔNG dùng làm khóa)
+
+  -- ⚠️ VERIFY tên field với payload thật (chưa có mẫu flowBatchDetailVoList). Sai → cột NULL, raw_line vẫn giữ đủ.
+  JSON_VALUE(b, '$.batchCode')                             AS batch_code,     -- ⚠️ có thể là itemBatchCode / lecangsBatchCode
+  JSON_VALUE(b, '$.goodsCode')                             AS goods_code,     -- ⚠️
+  SAFE_CAST(JSON_VALUE(b, '$.goodsNum') AS INT64)          AS qty_delta,      -- ⚠️ qty của lô này (tổng = flow.qty_delta)
+  SAFE_CAST(JSON_VALUE(b, '$.goodsLevel') AS INT64)        AS goods_level,    -- ⚠️
+  ${lecangs.ts("JSON_VALUE(b, '$.warehouseDate')")}        AS warehouse_date, -- ⚠️ ngày nhập của lô (FIFO/aging)
+
+  b                                                        AS raw_line        -- an toàn: giữ nguyên phần tử JSON
+FROM picked,
+     UNNEST(JSON_QUERY_ARRAY(raw_payload, '$.flowBatchDetailVoList')) AS b WITH OFFSET line_no

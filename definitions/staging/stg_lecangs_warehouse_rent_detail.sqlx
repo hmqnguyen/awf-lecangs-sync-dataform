@@ -1,7 +1,7 @@
 config {
   type: "table",
   schema: dataform.projectConfig.vars.staging_dataset,
-  description: "Staging warehouse rent detail (per-SKU/batch storage line) — dedupe theo detail_id.",
+  description: "Staging warehouse rent detail (per-SKU/lô storage line). Dedupe theo (daily_expense_id, detail_id). dailyExpenseId có native trong payload (đồng thời được inject) → FK → warehouse_rent_summary.daily_expense_id.",
   tags: ["staging", "lecangs"],
   bigquery: { partitionBy: "billing_date", clusterBy: ["goods_code"] }
 }
@@ -10,25 +10,44 @@ WITH parsed AS (
   SELECT
     brand,
     _ingested_at,
-    JSON_VALUE(raw_payload, '$.dailyExpenseId')            AS daily_expense_id,   -- FK → warehouse_rent_summary.daily_expense_id
-    JSON_VALUE(raw_payload, '$.id')                         AS detail_id,
+    -- keys (giữ STRING để khớp FK join với summary.daily_expense_id)
+    JSON_VALUE(raw_payload, '$.id')                          AS detail_id,          -- PK dòng detail
+    JSON_VALUE(raw_payload, '$.dailyExpenseId')              AS daily_expense_id,    -- FK → warehouse_rent_summary
+    JSON_VALUE(raw_payload, '$.dailyExpenseHistoryId')       AS daily_expense_history_id,
+
+    -- dimensions
     JSON_VALUE(raw_payload, '$.warehouseCode')              AS warehouse_code,
-    JSON_VALUE(raw_payload, '$.businessNo')                 AS business_no,
-    JSON_VALUE(raw_payload, '$.goodsCode')                 AS goods_code,
-    JSON_VALUE(raw_payload, '$.lecangsCode')               AS lecangs_code,
+    JSON_VALUE(raw_payload, '$.businessNo')                 AS business_no,          -- ASN/inbound ref của lô tồn
+    JSON_VALUE(raw_payload, '$.lecangsCode')               AS lecangs_code,          -- mã Lecangs (WOOD-xxxx)
+    JSON_VALUE(raw_payload, '$.goodsCode')                 AS goods_code,            -- AFW SKU
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.type') AS INT64)          AS detail_type,   -- type=0 (loại dòng phí)
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.measurementUnit') AS INT64) AS measurement_unit,
+
+    -- thời gian
     COALESCE(
       SAFE.PARSE_DATE('%Y-%m-%d', JSON_VALUE(raw_payload, '$.billingDate')),
       SAFE.PARSE_DATE('%Y%m%d',   JSON_VALUE(raw_payload, '$.billingDate'))
     )                                                        AS billing_date,
-    SAFE_CAST(JSON_VALUE(raw_payload, '$.goodsNum') AS INT64)     AS goods_num,
-    SAFE_CAST(JSON_VALUE(raw_payload, '$.inventoryAge') AS INT64) AS inventory_age,
-    SAFE_CAST(JSON_VALUE(raw_payload, '$.volume') AS NUMERIC)     AS volume,
-    SAFE_CAST(JSON_VALUE(raw_payload, '$.unitPrice') AS NUMERIC)  AS unit_price,
-    SAFE_CAST(JSON_VALUE(raw_payload, '$.expense') AS NUMERIC)    AS expense
+    ${lecangs.ts("JSON_VALUE(raw_payload, '$.billingTime')")}            AS billing_time,             -- '2026-06-02 15:00:00' (space)
+    ${lecangs.ts("JSON_VALUE(raw_payload, '$.inventoryOperationTime')")} AS inventory_operation_time, -- thường null
+
+    -- kích thước lô (m) — dùng cho phân bổ theo volume/dim sau này
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.wmsLength') AS NUMERIC)  AS wms_length,
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.wmsWidth')  AS NUMERIC)  AS wms_width,
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.wmsHeight') AS NUMERIC)  AS wms_height,
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.volume')    AS NUMERIC)  AS volume,          -- CBM ngày (đã × goodsNum theo Lecangs)
+
+    -- số lượng & phí
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.goodsNum')     AS INT64)   AS goods_num,
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.inventoryAge') AS INT64)   AS inventory_age, -- tuổi tồn (ngày) — dùng cho 90-day free tier
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.unitPrice')    AS NUMERIC) AS unit_price,    -- đơn giá theo bậc inventoryAge
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.expense')      AS NUMERIC) AS expense        -- = volume × unit_price
   FROM ${ref("raw_lecangs_warehouse_rent_detail")}
 ),
 ranked AS (
-  SELECT *, ROW_NUMBER() OVER (PARTITION BY daily_expense_id, detail_id ORDER BY _ingested_at DESC) AS rn
+  SELECT *, ROW_NUMBER() OVER (
+    PARTITION BY daily_expense_id, detail_id ORDER BY _ingested_at DESC
+  ) AS rn
   FROM parsed
 )
 SELECT * EXCEPT(rn, _ingested_at) FROM ranked WHERE rn = 1

@@ -1,7 +1,7 @@
 config {
   type: "table",
   schema: dataform.projectConfig.vars.staging_dataset,
-  description: "Staging inventory — parse raw_payload + dedupe theo (snapshot_date, warehouse_code, goods_code). Snapshot tồn kho.",
+  description: "Staging inventory (snapshot, GRAIN = LÔ theo businessNo/ASN). Mỗi SKU có thể có nhiều lô (khác businessNo/warehouseDate/inventoryAge). Dedup theo (snapshot_date, warehouse_code, goods_code, business_no, warehouse_date) để KHÔNG gộp nhầm lô. Rollup về SKU làm ở master/mart (SUM).",
   tags: ["staging", "lecangs"],
   bigquery: { partitionBy: "snapshot_date", clusterBy: ["goods_code"] }
 }
@@ -9,33 +9,31 @@ config {
 WITH parsed AS (
   SELECT
     brand,
-    DATE(_ingested_at)                                        AS snapshot_date,
+    DATE(_ingested_at)                                        AS snapshot_date,   -- ngày chụp snapshot (UTC ingest)
     _ingested_at,
-    JSON_VALUE(raw_payload, '$.businessNo')                   AS business_no,
+    JSON_VALUE(raw_payload, '$.businessNo')                   AS business_no,      -- ASN/chứng từ nhập của LÔ
     JSON_VALUE(raw_payload, '$.warehouseCode')               AS warehouse_code,
     JSON_VALUE(raw_payload, '$.goodsCode')                   AS goods_code,
     JSON_VALUE(raw_payload, '$.lecangsCode')                 AS lecangs_code,
     JSON_VALUE(raw_payload, '$.enName')                      AS en_name,
     JSON_VALUE(raw_payload, '$.cnName')                      AS cn_name,
-    SAFE_CAST(JSON_VALUE(raw_payload, '$.goodsNum') AS INT64)     AS goods_num,
-    COALESCE(
-      SAFE.PARSE_TIMESTAMP('%Y-%m-%dT%H:%M:%S', JSON_VALUE(raw_payload, '$.warehouseDate')),
-      SAFE.PARSE_TIMESTAMP('%Y-%m-%d %H:%M:%S', JSON_VALUE(raw_payload, '$.warehouseDate'))
-    )                                                          AS warehouse_date,
-    SAFE_CAST(JSON_VALUE(raw_payload, '$.inventoryAge') AS INT64) AS inventory_age,
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.goodsNum') AS INT64)     AS goods_num,    -- tồn của LÔ này
+    ${lecangs.ts("JSON_VALUE(raw_payload, '$.warehouseDate')")}   AS warehouse_date, -- giờ KHO (US); ngày nhập lô → gốc tính inventory_age
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.inventoryAge') AS INT64) AS inventory_age, -- tuổi lô (ngày) → then chốt 90-day free của Castlegate
     SAFE_CAST(JSON_VALUE(raw_payload, '$.wmsLength') AS NUMERIC)  AS wms_length,
     SAFE_CAST(JSON_VALUE(raw_payload, '$.wmsWidth')  AS NUMERIC)  AS wms_width,
     SAFE_CAST(JSON_VALUE(raw_payload, '$.wmsHeight') AS NUMERIC)  AS wms_height,
-    JSON_VALUE(raw_payload, '$.measureUnit')                 AS measure_unit,
+    JSON_VALUE(raw_payload, '$.measureUnit')                 AS measure_unit,      -- đơn vị dài
     SAFE_CAST(JSON_VALUE(raw_payload, '$.wmsWeight') AS NUMERIC)  AS wms_weight,
     JSON_VALUE(raw_payload, '$.weightUnit')                 AS weight_unit,
-    SAFE_CAST(JSON_VALUE(raw_payload, '$.volume') AS NUMERIC)     AS volume,
-    JSON_VALUE(raw_payload, '$.measurementUnit')            AS measurement_unit
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.volume') AS NUMERIC)     AS volume,        -- CBM lô trong kho
+    JSON_VALUE(raw_payload, '$.measurementUnit')            AS measurement_unit    -- đơn vị volume (theo billing chủ hàng)
   FROM ${ref("raw_lecangs_inventory")}
 ),
 ranked AS (
   SELECT *, ROW_NUMBER() OVER (
-    PARTITION BY snapshot_date, warehouse_code, goods_code ORDER BY _ingested_at DESC
+    PARTITION BY snapshot_date, warehouse_code, goods_code, business_no, warehouse_date
+    ORDER BY _ingested_at DESC
   ) AS rn
   FROM parsed
 )

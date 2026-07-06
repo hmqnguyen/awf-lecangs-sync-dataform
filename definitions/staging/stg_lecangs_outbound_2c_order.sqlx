@@ -25,10 +25,10 @@ SELECT
   JSON_VALUE(raw_payload, '$.masterTrackingNos')            AS master_tracking_nos,
   JSON_VALUE(raw_payload, '$.trackingNos')                  AS tracking_nos,
   SAFE_CAST(JSON_VALUE(raw_payload, '$.status') AS INT64)   AS status_code,
-  ${lecangs.ts("JSON_VALUE(raw_payload, '$.createTime')")}   AS create_time,
-  ${lecangs.ts("JSON_VALUE(raw_payload, '$.updateTime')")}   AS update_time,
-  ${lecangs.ts("JSON_VALUE(raw_payload, '$.submitTime')")}   AS submit_time,
-  ${lecangs.ts("JSON_VALUE(raw_payload, '$.deliveryTime')")} AS delivery_time,
+  ${lecangs.ts("JSON_VALUE(raw_payload, '$.createTime')")}   AS create_time,   -- 北京/Beijing time
+  ${lecangs.ts("JSON_VALUE(raw_payload, '$.updateTime')")}   AS update_time,   -- Beijing time
+  ${lecangs.ts("JSON_VALUE(raw_payload, '$.submitTime')")}   AS submit_time,   -- giờ KHO (US) — KHÁC createTime
+  ${lecangs.ts("JSON_VALUE(raw_payload, '$.deliveryTime')")} AS delivery_time, -- giờ KHO (US) — dùng cho cost_date fulfillment
   JSON_VALUE(raw_payload, '$.carrierName')                  AS carrier_name,
   SAFE_CAST(JSON_VALUE(raw_payload, '$.expressMode') AS INT64) AS express_mode,
   JSON_VALUE(raw_payload, '$.saleProductCode')              AS sale_product_code,
@@ -40,7 +40,6 @@ SELECT
   SAFE_CAST(JSON_VALUE(raw_payload, '$.totalExpense') AS NUMERIC) AS total_expense,
   JSON_VALUE(raw_payload, '$.totalExpenseCurrency')         AS total_expense_currency,
   JSON_VALUE(raw_payload, '$.zoneCode')                     AS zone_code,
-  SAFE_CAST(JSON_VALUE(raw_payload, '$.totalCount') AS INT64) AS total_count,
   SAFE_CAST(JSON_VALUE(raw_payload, '$.orderSource') AS INT64) AS order_source,
   SAFE_CAST(JSON_VALUE(raw_payload, '$.isSfp') AS BOOL)     AS is_sfp,
 
