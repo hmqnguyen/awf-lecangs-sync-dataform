@@ -37,4 +37,4 @@ ranked AS (
   ) AS rn
   FROM parsed
 )
-SELECT * EXCEPT(rn, _ingested_at) FROM ranked WHERE rn = 1
+SELECT * EXCEPT(rn, _ingested_at), _ingested_at AS _loaded_at FROM ranked WHERE rn = 1

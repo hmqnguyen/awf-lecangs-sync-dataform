@@ -24,6 +24,7 @@ SELECT
   wms_length, wms_width, wms_height, wms_weight, weight_unit,
   volume,
   measure_unit,
-  measurement_unit
+  measurement_unit,
+  _loaded_at
 FROM ${ref("stg_lecangs_inventory")}
-${when(incremental(), `WHERE snapshot_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 DAY)`)}
+${when(incremental(), `WHERE _loaded_at > (SELECT MAX(_loaded_at) FROM ${self()})`)}

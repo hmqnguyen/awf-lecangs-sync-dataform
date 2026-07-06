@@ -18,6 +18,7 @@ SELECT
   goods_code,
   lecangs_code,
   qty_delta,
-  update_time
+  update_time,
+  _loaded_at
 FROM ${ref("stg_lecangs_inventory_flow")}
-${when(incremental(), `WHERE flow_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY) OR flow_date IS NULL`)}
+${when(incremental(), `WHERE _loaded_at > (SELECT MAX(_loaded_at) FROM ${self()})`)}
