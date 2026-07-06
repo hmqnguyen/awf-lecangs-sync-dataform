@@ -1,0 +1,29 @@
+config {
+  type: "table",
+  schema: dataform.projectConfig.vars.staging_dataset,
+  description: "Staging 2C package — CON (packageList): kiện hàng + kích thước/khối lượng. PK (toc_order_no, package_no), FK toc_order_no.",
+  tags: ["staging", "lecangs", "outbound_2c"],
+  bigquery: { clusterBy: ["toc_order_no", "package_no"] }
+}
+
+WITH latest AS (
+  SELECT *, ROW_NUMBER() OVER (
+    PARTITION BY JSON_VALUE(raw_payload, '$.tocOrderNo') ORDER BY _ingested_at DESC
+  ) AS rn
+  FROM ${ref("raw_lecangs_outbound_2c")}
+),
+picked AS ( SELECT * FROM latest WHERE rn = 1 )
+SELECT
+  brand,
+  JSON_VALUE(raw_payload, '$.tocOrderNo')               AS toc_order_no,
+  pkg_idx + 1                                           AS package_index,
+  JSON_VALUE(pkg, '$.packageNo')                       AS package_no,
+  JSON_VALUE(pkg, '$.trackingNo')                      AS tracking_no,
+  SAFE_CAST(JSON_VALUE(pkg, '$.status') AS INT64)      AS status_code,
+  SAFE_CAST(JSON_VALUE(pkg, '$.length') AS NUMERIC)    AS length,
+  SAFE_CAST(JSON_VALUE(pkg, '$.width') AS NUMERIC)     AS width,
+  SAFE_CAST(JSON_VALUE(pkg, '$.height') AS NUMERIC)    AS height,
+  SAFE_CAST(JSON_VALUE(pkg, '$.weight') AS NUMERIC)    AS weight,
+  JSON_VALUE(pkg, '$.weightUnit')                      AS weight_unit,
+  JSON_VALUE(pkg, '$.lengthUnit')                      AS length_unit
+FROM picked, UNNEST(JSON_QUERY_ARRAY(raw_payload, '$.packageList')) AS pkg WITH OFFSET pkg_idx

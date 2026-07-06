@@ -1,0 +1,61 @@
+config {
+  type: "table",
+  schema: dataform.projectConfig.vars.staging_dataset,
+  description: "Staging inbound ASN — CHA (header), dedupe theo asn_no (bản mới nhất). Trích đầy đủ field header từ payload Lecangs.",
+  tags: ["staging", "lecangs", "inbound"],
+  bigquery: { partitionBy: "create_date", clusterBy: ["asn_no"] }
+}
+
+WITH latest AS (
+  SELECT *, ROW_NUMBER() OVER (
+    PARTITION BY JSON_VALUE(raw_payload, '$.asnNo') ORDER BY _ingested_at DESC
+  ) AS rn
+  FROM ${ref("raw_lecangs_inbound")}
+)
+SELECT
+  brand,
+  JSON_VALUE(raw_payload, '$.asnNo')                              AS asn_no,
+  SAFE_CAST(JSON_VALUE(raw_payload, '$.asnType') AS INT64)        AS asn_type,
+  JSON_VALUE(raw_payload, '$.deliveryWarehouse')                 AS warehouse_code,
+  JSON_VALUE(raw_payload, '$.poNo')                              AS po_no,
+  JSON_VALUE(raw_payload, '$.erpNo')                             AS erp_no,
+  JSON_VALUE(raw_payload, '$.trackType')                         AS track_type,
+  JSON_VALUE(raw_payload, '$.ownerRemark')                       AS owner_remark,
+  SAFE_CAST(JSON_VALUE(raw_payload, '$.status') AS INT64)        AS status_code,
+  SAFE_CAST(JSON_VALUE(raw_payload, '$.auditStatus') AS INT64)   AS audit_status,
+  JSON_VALUE(raw_payload, '$.planningNo')                        AS planning_no,
+  SAFE_CAST(JSON_VALUE(raw_payload, '$.skuNum') AS INT64)        AS sku_num,
+  SAFE_CAST(JSON_VALUE(raw_payload, '$.skuTotal') AS INT64)      AS sku_total,
+  SAFE_CAST(JSON_VALUE(raw_payload, '$.totalWeight') AS NUMERIC) AS total_weight,
+  SAFE_CAST(JSON_VALUE(raw_payload, '$.totalVolume') AS NUMERIC) AS total_volume,
+  SAFE_CAST(JSON_VALUE(raw_payload, '$.receivingSkuNum') AS INT64)   AS receiving_sku_num,
+  SAFE_CAST(JSON_VALUE(raw_payload, '$.receivingSkuTotal') AS INT64) AS receiving_sku_total,
+  JSON_VALUE(raw_payload, '$.masterBolNo')                       AS master_bol_no,
+  JSON_VALUE(raw_payload, '$.containerNo')                       AS container_no,
+  JSON_VALUE(raw_payload, '$.shipCompanyCode')                  AS ship_company_code,
+  SAFE_CAST(JSON_VALUE(raw_payload, '$.containerModel') AS INT64) AS container_model,
+  JSON_VALUE(raw_payload, '$.sealNo')                           AS seal_no,
+  JSON_VALUE(raw_payload, '$.landCarrier')                      AS land_carrier,
+  JSON_VALUE(raw_payload, '$.broker')                           AS broker,
+  JSON_VALUE(raw_payload, '$.bolNo')                            AS bol_no,
+  JSON_VALUE(raw_payload, '$.proNo')                            AS pro_no,
+  JSON_VALUE(raw_payload, '$.palletNo')                         AS pallet_no,
+  SAFE_CAST(JSON_VALUE(raw_payload, '$.receivePalletNo') AS INT64) AS receive_pallet_no,
+  ${lecangs.ts("JSON_VALUE(raw_payload, '$.landEta')")}          AS land_eta,
+  JSON_VALUE(raw_payload, '$.expressCarrier')                   AS express_carrier,
+  JSON_VALUE(raw_payload, '$.trackNo')                          AS track_no,
+  ${lecangs.ts("JSON_VALUE(raw_payload, '$.expressEta')")}       AS express_eta,
+  JSON_VALUE(raw_payload, '$.trucker')                          AS trucker,
+  ${lecangs.ts("JSON_VALUE(raw_payload, '$.requestApptDate')")}  AS request_appt_date,
+  ${lecangs.ts("JSON_VALUE(raw_payload, '$.truckerDeliveryDate')")} AS trucker_delivery_date,
+  ${lecangs.ts("JSON_VALUE(raw_payload, '$.receivingDate')")}    AS receiving_date,
+  ${lecangs.ts("JSON_VALUE(raw_payload, '$.firReceiveTime')")}   AS fir_receive_time,
+  ${lecangs.ts("JSON_VALUE(raw_payload, '$.closeTime')")}        AS close_time,
+  ${lecangs.ts("JSON_VALUE(raw_payload, '$.createTime')")}       AS create_time,
+  ${lecangs.ts("JSON_VALUE(raw_payload, '$.updateTime')")}       AS update_time,
+  JSON_VALUE(raw_payload, '$.closeRemark')                      AS close_remark,
+  ${lecangs.ts("JSON_VALUE(raw_payload, '$.eta')")}             AS eta,
+  SAFE_CAST(JSON_VALUE(raw_payload, '$.totalCount') AS INT64)    AS total_count,
+  DATE(${lecangs.ts("JSON_VALUE(raw_payload, '$.createTime')")}) AS create_date
+FROM latest
+WHERE rn = 1

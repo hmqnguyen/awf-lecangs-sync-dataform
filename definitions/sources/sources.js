@@ -13,6 +13,8 @@ const rawTables = [
   "raw_lecangs_inbound",
   "raw_lecangs_warehouse_rent_summary",
   "raw_lecangs_warehouse_rent_detail",
+  "raw_lecangs_bill_summary",
+  "raw_lecangs_bill_detail",
 ];
 
 rawTables.forEach(name => {

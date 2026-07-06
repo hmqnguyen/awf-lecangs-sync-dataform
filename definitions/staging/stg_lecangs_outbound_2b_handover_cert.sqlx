@@ -1,0 +1,21 @@
+config {
+  type: "table",
+  schema: dataform.projectConfig.vars.staging_dataset,
+  description: "Staging 2B handover cert — CON (outboundHandoverCertList): ảnh biên bản giao (mảng URL string). PK (order_no, line_no), FK order_no.",
+  tags: ["staging", "lecangs", "outbound_2b"],
+  bigquery: { clusterBy: ["order_no"] }
+}
+
+WITH latest AS (
+  SELECT *, ROW_NUMBER() OVER (
+    PARTITION BY JSON_VALUE(raw_payload, '$.orderNo') ORDER BY _ingested_at DESC
+  ) AS rn
+  FROM ${ref("raw_lecangs_outbound_2b")}
+),
+picked AS ( SELECT * FROM latest WHERE rn = 1 )
+SELECT
+  brand,
+  JSON_VALUE(raw_payload, '$.orderNo')                  AS order_no,
+  line_no + 1                                           AS line_no,
+  JSON_VALUE(cert, '$')                                AS cert_url
+FROM picked, UNNEST(JSON_QUERY_ARRAY(raw_payload, '$.outboundHandoverCertList')) AS cert WITH OFFSET line_no

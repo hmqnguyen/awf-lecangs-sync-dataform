@@ -1,0 +1,32 @@
+config {
+  type: "table",
+  schema: dataform.projectConfig.vars.staging_dataset,
+  description: "Staging inbound flow — CON của inbound_asn (flows[], CHI PHÍ đầu vào / first-mile: unloading, container, discount...). PK (asn_no, line_no), FK asn_no. Nguồn cho fact_logistics_cost (cost_type='inbound').",
+  tags: ["staging", "lecangs", "inbound", "cost"],
+  bigquery: { clusterBy: ["asn_no", "cost_type"] }
+}
+
+WITH latest AS (
+  SELECT *, ROW_NUMBER() OVER (
+    PARTITION BY JSON_VALUE(raw_payload, '$.asnNo') ORDER BY _ingested_at DESC
+  ) AS rn
+  FROM ${ref("raw_lecangs_inbound")}
+),
+picked AS ( SELECT * FROM latest WHERE rn = 1 )
+SELECT
+  brand,
+  JSON_VALUE(raw_payload, '$.asnNo')                       AS asn_no,       -- FK
+  line_no + 1                                              AS line_no,
+  ${lecangs.ts("JSON_VALUE(flw, '$.billTime')")}           AS bill_time,
+  JSON_VALUE(flw, '$.costType')                            AS cost_type,
+  JSON_VALUE(flw, '$.costCnName')                          AS cost_cn_name,
+  JSON_VALUE(flw, '$.costEnName')                          AS cost_en_name,
+  SAFE_CAST(JSON_VALUE(flw, '$.unitPrice') AS NUMERIC)     AS unit_price,
+  SAFE_CAST(JSON_VALUE(flw, '$.amount') AS NUMERIC)        AS quantity,
+  JSON_VALUE(flw, '$.currency')                            AS currency,
+  SAFE_CAST(JSON_VALUE(flw, '$.billStatus') AS INT64)      AS bill_status,
+  SAFE_CAST(JSON_VALUE(flw, '$.adjustAmount') AS NUMERIC)  AS adjust_amount,
+  SAFE_CAST(JSON_VALUE(flw, '$.totalAmount') AS NUMERIC)   AS total_amount,   -- chi phí thực dòng này
+  flw                                                      AS raw_line
+FROM picked,
+     UNNEST(JSON_QUERY_ARRAY(raw_payload, '$.flows')) AS flw WITH OFFSET line_no

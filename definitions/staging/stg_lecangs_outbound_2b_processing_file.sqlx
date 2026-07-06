@@ -1,0 +1,23 @@
+config {
+  type: "table",
+  schema: dataform.projectConfig.vars.staging_dataset,
+  description: "Staging 2B processing file — CON (omsTobOrderProcessingVo.processFileVoList): file hướng dẫn xử lý. PK (order_no, line_no), FK order_no.",
+  tags: ["staging", "lecangs", "outbound_2b"],
+  bigquery: { clusterBy: ["order_no"] }
+}
+
+WITH latest AS (
+  SELECT *, ROW_NUMBER() OVER (
+    PARTITION BY JSON_VALUE(raw_payload, '$.orderNo') ORDER BY _ingested_at DESC
+  ) AS rn
+  FROM ${ref("raw_lecangs_outbound_2b")}
+),
+picked AS ( SELECT * FROM latest WHERE rn = 1 )
+SELECT
+  brand,
+  JSON_VALUE(raw_payload, '$.orderNo')                  AS order_no,
+  line_no + 1                                           AS line_no,
+  JSON_VALUE(f, '$.url')                               AS file_url,
+  JSON_VALUE(f, '$.fileName')                          AS file_name,
+  f                                                     AS raw_line
+FROM picked, UNNEST(JSON_QUERY_ARRAY(raw_payload, '$.omsTobOrderProcessingVo.processFileVoList')) AS f WITH OFFSET line_no

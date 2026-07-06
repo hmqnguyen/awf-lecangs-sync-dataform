@@ -1,0 +1,21 @@
+config {
+  type: "table",
+  schema: dataform.projectConfig.vars.mart_dataset,
+  description: "MART: tổng chi phí logistics theo NGÀY × KHO (Lecangs). So sánh chi phí cấp kho; khi union thêm mart kho khác (Castlegate/FBA/WFS) sẽ so chéo được toàn hệ thống.",
+  tags: ["mart", "lecangs", "cost"],
+  bigquery: { partitionBy: "cost_date", clusterBy: ["warehouse_code"] }
+}
+
+SELECT
+  cost_date,
+  warehouse_code,
+  ANY_VALUE(brand)                                                    AS brand,
+  SUM(IF(cost_type = 'fulfillment', allocated_amount, 0))             AS fulfillment_cost,
+  SUM(IF(cost_type = 'storage',     allocated_amount, 0))             AS storage_cost,
+  SUM(IF(cost_type = 'inbound',     allocated_amount, 0))             AS inbound_cost,
+  SUM(allocated_amount)                                              AS total_logistics_cost,
+  COUNT(DISTINCT IF(goods_code IS NOT NULL, goods_code, NULL))        AS sku_count,
+  COUNT(DISTINCT ref_no)                                              AS ref_count,
+  ANY_VALUE(currency)                                                AS currency
+FROM ${ref("fact_sku_logistics_cost")}
+GROUP BY cost_date, warehouse_code

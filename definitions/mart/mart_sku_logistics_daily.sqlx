@@ -1,0 +1,22 @@
+config {
+  type: "table",
+  schema: dataform.projectConfig.vars.mart_dataset,
+  description: "MART: chi phí logistics per-SKU theo ngày/kho, tách cột theo loại (fulfillment/storage/inbound). Nền để so chi phí giao chéo Lecangs vs Castlegate vs FBA cho cùng SKU. goods_code NULL = phần chưa phân bổ được (unmatched).",
+  tags: ["mart", "lecangs", "cost"],
+  bigquery: { partitionBy: "cost_date", clusterBy: ["warehouse_code", "goods_code"] }
+}
+
+SELECT
+  cost_date,
+  warehouse_code,
+  goods_code,
+  ANY_VALUE(brand)                                                    AS brand,
+  SUM(IF(cost_type = 'fulfillment', allocated_amount, 0))             AS fulfillment_cost,
+  SUM(IF(cost_type = 'storage',     allocated_amount, 0))             AS storage_cost,
+  SUM(IF(cost_type = 'inbound',     allocated_amount, 0))             AS inbound_cost,
+  SUM(allocated_amount)                                              AS total_logistics_cost,
+  SUM(IF(allocation_basis = 'unmatched', allocated_amount, 0))       AS unallocated_cost,
+  SUM(IF(allocation_basis = 'quantity', alloc_qty, 0))               AS allocated_qty,
+  ANY_VALUE(currency)                                                AS currency
+FROM ${ref("fact_sku_logistics_cost")}
+GROUP BY cost_date, warehouse_code, goods_code

@@ -1,0 +1,25 @@
+config {
+  type: "table",
+  schema: dataform.projectConfig.vars.staging_dataset,
+  description: "Staging bill detail — 1 dòng/1 dòng-sheet của file Excel. Giữ sheet_name + values(JSON) để tách per-sheet ở tầng sau. Dedupe theo (billing_no, sheet_name, row_index).",
+  tags: ["staging", "lecangs", "bill"],
+  bigquery: { clusterBy: ["sheet_name", "billing_no"] }
+}
+
+WITH parsed AS (
+  SELECT
+    brand,
+    _ingested_at,
+    JSON_VALUE(raw_payload, '$.billing_no')                 AS billing_no,
+    JSON_VALUE(raw_payload, '$.sheet_name')                 AS sheet_name,
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.row_index') AS INT64) AS row_index,
+    JSON_QUERY(raw_payload, '$.values')                     AS values_json   -- object header→cell, tách ở model per-sheet
+  FROM ${ref("raw_lecangs_bill_detail")}
+),
+ranked AS (
+  SELECT *, ROW_NUMBER() OVER (
+    PARTITION BY billing_no, sheet_name, row_index ORDER BY _ingested_at DESC
+  ) AS rn
+  FROM parsed
+)
+SELECT * EXCEPT(rn, _ingested_at) FROM ranked WHERE rn = 1

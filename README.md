@@ -29,3 +29,12 @@ Chạy: `dataform run --environment dev` (hoặc prod). Dataform đọc raw do C
 - **Phí fulfillment (2C/2B) ở mức order/package, chưa phân bổ về SKU** — Cost Allocation Engine là bước sau; `fact_logistics_cost.goods_code` chỉ có ở dòng storage.
 - **Timezone**: thời gian Lecangs theo giờ Bắc Kinh; các cột thời gian giữ nguyên như API trả — cân nhắc chuẩn hoá nếu cần so khớp múi giờ.
 - Chưa có COGS / SKU master mapping (goods_code = AFW SKU) — JOIN sang bảng mapping khi có.
+
+## Bill
+- `stg_lecangs_bill_summary` (getByPage list) + `stg_lecangs_bill_detail` (mọi sheet, giữ `sheet_name` + `values` JSON).
+- Model typed per-sheet (运费 freight, 系统费用 system_fee, ...) là bước sau: `SELECT ... FROM stg_lecangs_bill_detail WHERE sheet_name = '运费'`, trích cột bằng `JSON_VALUE(values_json, "$['类型']")`.
+
+## Mart (afw_lecangs_mart[_dev])
+- **mart_sku_logistics_daily** — chi phí logistics per-SKU/ngày/kho, tách cột fulfillment/storage/inbound. Nền so Lecangs vs Castlegate vs FBA.
+- **mart_warehouse_cost_daily** — tổng chi phí theo ngày × kho (so cấp kho).
+- **mart_sku_pnl_daily** — SKELETON P&L (DISABLED). Bật khi có nguồn doanh thu/COGS/phí sàn từ pipeline khác.

@@ -1,7 +1,7 @@
 defaultProject: allforwood-dev
-defaultDataset: afw_lecangs_fact_dev
+defaultDataset: afw_lecangs_fact
 defaultLocation: US
-defaultAssertionDataset: afw_lecangs_fact_dev
+defaultAssertionDataset: afw_lecangs_fact
 
 # Kiến trúc 4 lớp: Raw (C# ghi) → Staging → Master & Fact
 #   - C# AfwLecangsSync ghi raw_payload vào raw dataset; Dataform chỉ ĐỌC raw.
@@ -9,7 +9,8 @@ defaultAssertionDataset: afw_lecangs_fact_dev
 # Location phải khớp BigQuery dataset location (US multi-region).
 
 vars:
-  raw_dataset:     afw_lecangs_raw_dev
-  staging_dataset: afw_lecangs_staging_dev
-  fact_dataset:    afw_lecangs_fact_dev
-  master_dataset:  afw_lecangs_fact_dev
+  raw_dataset:     afw_lecangs_raw
+  staging_dataset: afw_lecangs_staging
+  fact_dataset:    afw_lecangs_fact
+  master_dataset:  afw_lecangs_fact
+  mart_dataset:    afw_lecangs_mart

@@ -1,0 +1,137 @@
+config {
+  type: "incremental",
+  schema: dataform.projectConfig.vars.fact_dataset,
+  description: "Fact SKU logistics cost — phân bổ phí logistics về từng SKU. storage đã per-SKU (direct); fulfillment 2C (package), 2B (order), first-mile inbound (ASN) phân bổ theo TỶ LỆ QUANTITY của SKU trong parent. Chi phí không map được composition giữ nguyên goods_code NULL (allocation_basis='unmatched') để không mất tổng phí.",
+  tags: ["fact", "lecangs", "cost_allocation"],
+  uniqueKey: ["sku_cost_uid"],
+  bigquery: {
+    partitionBy: "cost_date",
+    clusterBy: ["goods_code", "cost_type"],
+    updatePartitionFilter: "cost_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 45 DAY)"
+  }
+}
+
+WITH cost AS (
+  SELECT
+    cost_uid, brand, cost_date, warehouse_code, goods_code, cost_type, source,
+    expense_code, expense_en, ref_no, package_no, amount, currency
+  FROM ${ref("fact_logistics_cost")}
+  ${when(incremental(), `WHERE cost_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 45 DAY)`)}
+),
+
+-- (1) storage: đã có goods_code → giữ nguyên (direct)
+direct AS (
+  SELECT
+    cost_uid, brand, cost_date, warehouse_code, goods_code, cost_type, source,
+    expense_code, expense_en, ref_no, package_no,
+    amount                                   AS original_amount,
+    CAST(NULL AS INT64)                      AS alloc_qty,
+    CAST(NULL AS INT64)                      AS total_qty,
+    amount                                   AS allocated_amount,
+    'direct'                                 AS allocation_basis,
+    currency
+  FROM cost
+  WHERE goods_code IS NOT NULL
+),
+
+-- ===== composition theo quantity =====
+comp_2c AS (
+  SELECT toc_order_no, package_no, goods_code, SUM(quantity) AS qty
+  FROM ${ref("stg_lecangs_outbound_2c_goods")} GROUP BY 1, 2, 3
+),
+comp_2c_tot AS (SELECT toc_order_no, package_no, SUM(qty) AS tot FROM comp_2c GROUP BY 1, 2),
+
+comp_2b AS (
+  SELECT order_no, goods_code, SUM(actual_num) AS qty
+  FROM ${ref("stg_lecangs_outbound_2b_goods")} GROUP BY 1, 2
+),
+comp_2b_tot AS (SELECT order_no, SUM(qty) AS tot FROM comp_2b GROUP BY 1),
+
+comp_in AS (
+  SELECT asn_no, goods_code, SUM(received_qty) AS qty
+  FROM ${ref("stg_lecangs_inbound_line")} GROUP BY 1, 2
+),
+comp_in_tot AS (SELECT asn_no, SUM(qty) AS tot FROM comp_in GROUP BY 1),
+
+-- (2) fulfillment 2C → phân bổ theo qty trong package
+alloc_2c AS (
+  SELECT
+    c.cost_uid, c.brand, c.cost_date, c.warehouse_code, g.goods_code, c.cost_type, c.source,
+    c.expense_code, c.expense_en, c.ref_no, c.package_no,
+    c.amount                                                    AS original_amount,
+    g.qty                                                       AS alloc_qty,
+    t.tot                                                       AS total_qty,
+    CAST(SAFE_DIVIDE(CAST(c.amount AS FLOAT64) * g.qty, t.tot) AS NUMERIC) AS allocated_amount,
+    'quantity'                                                  AS allocation_basis,
+    c.currency
+  FROM cost c
+  JOIN comp_2c     g ON c.ref_no = g.toc_order_no AND c.package_no = g.package_no
+  JOIN comp_2c_tot t ON c.ref_no = t.toc_order_no AND c.package_no = t.package_no
+  WHERE c.source = '2C' AND c.goods_code IS NULL AND t.tot > 0
+),
+
+-- (3) fulfillment 2B → phân bổ theo qty trong order
+alloc_2b AS (
+  SELECT
+    c.cost_uid, c.brand, c.cost_date, c.warehouse_code, g.goods_code, c.cost_type, c.source,
+    c.expense_code, c.expense_en, c.ref_no, c.package_no,
+    c.amount                                                    AS original_amount,
+    g.qty                                                       AS alloc_qty,
+    t.tot                                                       AS total_qty,
+    CAST(SAFE_DIVIDE(CAST(c.amount AS FLOAT64) * g.qty, t.tot) AS NUMERIC) AS allocated_amount,
+    'quantity'                                                  AS allocation_basis,
+    c.currency
+  FROM cost c
+  JOIN comp_2b     g ON c.ref_no = g.order_no
+  JOIN comp_2b_tot t ON c.ref_no = t.order_no
+  WHERE c.source = '2B' AND c.goods_code IS NULL AND t.tot > 0
+),
+
+-- (4) first-mile inbound → phân bổ theo received_qty trong ASN
+alloc_in AS (
+  SELECT
+    c.cost_uid, c.brand, c.cost_date, c.warehouse_code, g.goods_code, c.cost_type, c.source,
+    c.expense_code, c.expense_en, c.ref_no, c.package_no,
+    c.amount                                                    AS original_amount,
+    g.qty                                                       AS alloc_qty,
+    t.tot                                                       AS total_qty,
+    CAST(SAFE_DIVIDE(CAST(c.amount AS FLOAT64) * g.qty, t.tot) AS NUMERIC) AS allocated_amount,
+    'quantity'                                                  AS allocation_basis,
+    c.currency
+  FROM cost c
+  JOIN comp_in     g ON c.ref_no = g.asn_no
+  JOIN comp_in_tot t ON c.ref_no = t.asn_no
+  WHERE c.source = 'INBOUND' AND c.goods_code IS NULL AND t.tot > 0
+),
+
+allocated AS (
+  SELECT * FROM alloc_2c
+  UNION ALL SELECT * FROM alloc_2b
+  UNION ALL SELECT * FROM alloc_in
+),
+
+-- (5) không map được composition → giữ nguyên (không mất tổng phí)
+unmatched AS (
+  SELECT
+    cost_uid, brand, cost_date, warehouse_code, goods_code, cost_type, source,
+    expense_code, expense_en, ref_no, package_no,
+    amount                                   AS original_amount,
+    CAST(NULL AS INT64)                      AS alloc_qty,
+    CAST(NULL AS INT64)                      AS total_qty,
+    amount                                   AS allocated_amount,
+    'unmatched'                              AS allocation_basis,
+    currency
+  FROM cost
+  WHERE goods_code IS NULL
+    AND cost_uid NOT IN (SELECT cost_uid FROM allocated)
+),
+
+unioned AS (
+  SELECT * FROM direct
+  UNION ALL SELECT * FROM allocated
+  UNION ALL SELECT * FROM unmatched
+)
+SELECT
+  TO_HEX(MD5(CONCAT(cost_uid, '|', IFNULL(goods_code, '')))) AS sku_cost_uid,
+  *
+FROM unioned

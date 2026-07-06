@@ -10,6 +10,7 @@ WITH parsed AS (
   SELECT
     brand,
     _ingested_at,
+    JSON_VALUE(raw_payload, '$.dailyExpenseId')            AS daily_expense_id,   -- FK → warehouse_rent_summary.daily_expense_id
     JSON_VALUE(raw_payload, '$.id')                         AS detail_id,
     JSON_VALUE(raw_payload, '$.warehouseCode')              AS warehouse_code,
     JSON_VALUE(raw_payload, '$.businessNo')                 AS business_no,
@@ -27,7 +28,7 @@ WITH parsed AS (
   FROM ${ref("raw_lecangs_warehouse_rent_detail")}
 ),
 ranked AS (
-  SELECT *, ROW_NUMBER() OVER (PARTITION BY detail_id ORDER BY _ingested_at DESC) AS rn
+  SELECT *, ROW_NUMBER() OVER (PARTITION BY daily_expense_id, detail_id ORDER BY _ingested_at DESC) AS rn
   FROM parsed
 )
 SELECT * EXCEPT(rn, _ingested_at) FROM ranked WHERE rn = 1

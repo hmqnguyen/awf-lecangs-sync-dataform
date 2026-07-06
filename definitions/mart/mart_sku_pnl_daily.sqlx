@@ -1,0 +1,37 @@
+config {
+  type: "table",
+  schema: dataform.projectConfig.vars.mart_dataset,
+  disabled: true,   // BẬT (đổi false) khi đã có nguồn doanh thu / COGS / phí sàn
+  description: "SKELETON — P&L per-SKU/ngày. Ghép doanh thu (theo kênh) − COGS (Nhà Máy 5/SKU master) − phí sàn − logistics (Lecangs mart). Đang DISABLED vì thiếu nguồn ngoài repo Lecangs.",
+  tags: ["mart", "pnl", "skeleton"]
+}
+
+-- ================== HƯỚNG DẪN BẬT ==================
+-- 1) Thay các bảng placeholder bên dưới bằng bảng thật (từ pipeline khác):
+--      afw_channel_revenue_daily : doanh thu theo (goods_code, channel, date)  [Amazon/Wayfair/Shopify...]
+--      afw_sku_cogs              : giá vốn theo goods_code  (Airtable → BQ)
+--      afw_channel_fee_daily     : phí sàn theo (goods_code, channel, date)
+-- 2) Đổi các cột 0 TODO thành JOIN/tính thật, LEFT JOIN các bảng đó theo goods_code (+ channel/date).
+-- 3) Đặt disabled: false.
+-- Logistics đã sẵn sàng từ mart_sku_logistics_daily (fulfillment + storage + inbound).
+-- ===================================================
+
+SELECT
+  l.cost_date                                                   AS date,
+  l.goods_code,
+  l.warehouse_code,
+  l.brand,
+
+  CAST(0 AS NUMERIC)                                            AS revenue,         -- TODO: afw_channel_revenue_daily
+  CAST(0 AS NUMERIC)                                            AS cogs,            -- TODO: afw_sku_cogs × units
+  CAST(0 AS NUMERIC)                                            AS platform_fee,    -- TODO: afw_channel_fee_daily
+
+  l.fulfillment_cost,
+  l.storage_cost,
+  l.inbound_cost,
+  l.total_logistics_cost,
+
+  -- gross_profit = revenue − cogs − platform_fee − logistics
+  (CAST(0 AS NUMERIC) - CAST(0 AS NUMERIC) - CAST(0 AS NUMERIC) - l.total_logistics_cost) AS gross_profit,
+  l.currency
+FROM ${ref("mart_sku_logistics_daily")} AS l

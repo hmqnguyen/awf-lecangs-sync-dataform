@@ -1,7 +1,7 @@
 config {
   type: "table",
   schema: dataform.projectConfig.vars.staging_dataset,
-  description: "Staging warehouse rent summary (daily-rent) — dedupe theo daily_expense_id.",
+  description: "Staging warehouse rent summary (daily storage rent) — dedupe theo daily_expense_id.",
   tags: ["staging", "lecangs"],
   bigquery: { partitionBy: "billing_date", clusterBy: ["warehouse_code"] }
 }

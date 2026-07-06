@@ -1,0 +1,65 @@
+config {
+  type: "table",
+  schema: dataform.projectConfig.vars.staging_dataset,
+  description: "Staging outbound 2C (DTC) — CHA (order). Header + gộp 1:1 consignee_*. Dedupe theo toc_order_no. packageList tách sang bảng con.",
+  tags: ["staging", "lecangs", "outbound_2c"],
+  bigquery: { partitionBy: "create_date", clusterBy: ["toc_order_no"] }
+}
+
+WITH latest AS (
+  SELECT *, ROW_NUMBER() OVER (
+    PARTITION BY JSON_VALUE(raw_payload, '$.tocOrderNo') ORDER BY _ingested_at DESC
+  ) AS rn
+  FROM ${ref("raw_lecangs_outbound_2c")}
+)
+SELECT
+  brand,
+  JSON_VALUE(raw_payload, '$.tocOrderNo')                    AS toc_order_no,
+  JSON_VALUE(raw_payload, '$.orderNo')                       AS order_no,
+  JSON_VALUE(raw_payload, '$.warehouseCode')                AS warehouse_code,
+  JSON_VALUE(raw_payload, '$.referenceNo')                  AS reference_no,
+  JSON_VALUE(raw_payload, '$.store')                        AS store,
+  JSON_VALUE(raw_payload, '$.platform')                     AS platform,
+  JSON_VALUE(raw_payload, '$.platformNo')                   AS platform_no,
+  JSON_VALUE(raw_payload, '$.poNo')                         AS po_no,
+  JSON_VALUE(raw_payload, '$.masterTrackingNos')            AS master_tracking_nos,
+  JSON_VALUE(raw_payload, '$.trackingNos')                  AS tracking_nos,
+  SAFE_CAST(JSON_VALUE(raw_payload, '$.status') AS INT64)   AS status_code,
+  ${lecangs.ts("JSON_VALUE(raw_payload, '$.createTime')")}   AS create_time,
+  ${lecangs.ts("JSON_VALUE(raw_payload, '$.updateTime')")}   AS update_time,
+  ${lecangs.ts("JSON_VALUE(raw_payload, '$.submitTime')")}   AS submit_time,
+  ${lecangs.ts("JSON_VALUE(raw_payload, '$.deliveryTime')")} AS delivery_time,
+  JSON_VALUE(raw_payload, '$.carrierName')                  AS carrier_name,
+  SAFE_CAST(JSON_VALUE(raw_payload, '$.expressMode') AS INT64) AS express_mode,
+  JSON_VALUE(raw_payload, '$.saleProductCode')              AS sale_product_code,
+  JSON_VALUE(raw_payload, '$.carrierProductName')           AS carrier_product_name,
+  JSON_VALUE(raw_payload, '$.errorTips')                    AS error_tips,
+  JSON_VALUE(raw_payload, '$.remark')                       AS remark,
+  JSON_VALUE(raw_payload, '$.abandonmentReason')            AS abandonment_reason,
+  SAFE_CAST(JSON_VALUE(raw_payload, '$.autoDistributeWarehouse') AS BOOL) AS auto_distribute_warehouse,
+  SAFE_CAST(JSON_VALUE(raw_payload, '$.totalExpense') AS NUMERIC) AS total_expense,
+  JSON_VALUE(raw_payload, '$.totalExpenseCurrency')         AS total_expense_currency,
+  JSON_VALUE(raw_payload, '$.zoneCode')                     AS zone_code,
+  SAFE_CAST(JSON_VALUE(raw_payload, '$.totalCount') AS INT64) AS total_count,
+  SAFE_CAST(JSON_VALUE(raw_payload, '$.orderSource') AS INT64) AS order_source,
+  SAFE_CAST(JSON_VALUE(raw_payload, '$.isSfp') AS BOOL)     AS is_sfp,
+
+  -- consignee (omsTocOrderConsigneeVo, 1:1)
+  JSON_VALUE(raw_payload, '$.omsTocOrderConsigneeVo.name')            AS consignee_name,
+  JSON_VALUE(raw_payload, '$.omsTocOrderConsigneeVo.phone')           AS consignee_phone,
+  JSON_VALUE(raw_payload, '$.omsTocOrderConsigneeVo.email')           AS consignee_email,
+  JSON_VALUE(raw_payload, '$.omsTocOrderConsigneeVo.company')         AS consignee_company,
+  JSON_VALUE(raw_payload, '$.omsTocOrderConsigneeVo.countryCode')     AS consignee_country,
+  JSON_VALUE(raw_payload, '$.omsTocOrderConsigneeVo.province')        AS consignee_province,
+  JSON_VALUE(raw_payload, '$.omsTocOrderConsigneeVo.standardProvince') AS consignee_standard_province,
+  JSON_VALUE(raw_payload, '$.omsTocOrderConsigneeVo.city')            AS consignee_city,
+  JSON_VALUE(raw_payload, '$.omsTocOrderConsigneeVo.district')        AS consignee_district,
+  JSON_VALUE(raw_payload, '$.omsTocOrderConsigneeVo.postalCode')      AS consignee_postal,
+  JSON_VALUE(raw_payload, '$.omsTocOrderConsigneeVo.street1')         AS consignee_street1,
+  JSON_VALUE(raw_payload, '$.omsTocOrderConsigneeVo.street2')         AS consignee_street2,
+  JSON_VALUE(raw_payload, '$.omsTocOrderConsigneeVo.doorplate')       AS consignee_doorplate,
+  SAFE_CAST(JSON_VALUE(raw_payload, '$.omsTocOrderConsigneeVo.addressType') AS INT64) AS consignee_address_type,
+
+  DATE(${lecangs.ts("JSON_VALUE(raw_payload, '$.createTime')")}) AS create_date
+FROM latest
+WHERE rn = 1

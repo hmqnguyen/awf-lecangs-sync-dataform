@@ -1,0 +1,25 @@
+config {
+  type: "table",
+  schema: dataform.projectConfig.vars.staging_dataset,
+  description: "Staging inbound receive — CON của inbound_asn (receives[], ảnh/handover nhận hàng). PK (asn_no, line_no), FK asn_no.",
+  tags: ["staging", "lecangs", "inbound"],
+  bigquery: { clusterBy: ["asn_no"] }
+}
+
+WITH latest AS (
+  SELECT *, ROW_NUMBER() OVER (
+    PARTITION BY JSON_VALUE(raw_payload, '$.asnNo') ORDER BY _ingested_at DESC
+  ) AS rn
+  FROM ${ref("raw_lecangs_inbound")}
+),
+picked AS ( SELECT * FROM latest WHERE rn = 1 )
+SELECT
+  brand,
+  JSON_VALUE(raw_payload, '$.asnNo')                     AS asn_no,       -- FK
+  line_no + 1                                            AS line_no,
+  SAFE_CAST(JSON_VALUE(rec, '$.picType') AS INT64)       AS pic_type,
+  JSON_VALUE(rec, '$.picUrl')                            AS pic_url,      -- có thể nhiều URL nối bằng ';'
+  ${lecangs.ts("JSON_VALUE(rec, '$.receivingDate')")}    AS receiving_date,
+  rec                                                    AS raw_line
+FROM picked,
+     UNNEST(JSON_QUERY_ARRAY(raw_payload, '$.receives')) AS rec WITH OFFSET line_no

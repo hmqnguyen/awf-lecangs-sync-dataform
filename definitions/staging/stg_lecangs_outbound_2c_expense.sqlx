@@ -1,0 +1,30 @@
+config {
+  type: "table",
+  schema: dataform.projectConfig.vars.staging_dataset,
+  description: "Staging 2C expense — CON cấp 2 (packageList.expenseList): phí fulfillment per kiện (shipping, fuel, residential, AHS...). PK (toc_order_no, package_no, line_no). Nguồn fact_logistics_cost.",
+  tags: ["staging", "lecangs", "outbound_2c", "cost"],
+  bigquery: { clusterBy: ["toc_order_no", "expense_code"] }
+}
+
+WITH latest AS (
+  SELECT *, ROW_NUMBER() OVER (
+    PARTITION BY JSON_VALUE(raw_payload, '$.tocOrderNo') ORDER BY _ingested_at DESC
+  ) AS rn
+  FROM ${ref("raw_lecangs_outbound_2c")}
+),
+picked AS ( SELECT * FROM latest WHERE rn = 1 )
+SELECT
+  brand,
+  JSON_VALUE(raw_payload, '$.tocOrderNo')               AS toc_order_no,
+  JSON_VALUE(pkg, '$.packageNo')                       AS package_no,
+  line_no + 1                                           AS line_no,
+  JSON_VALUE(e, '$.expenseCode')                       AS expense_code,
+  JSON_VALUE(e, '$.expenseEnName')                     AS expense_en_name,
+  JSON_VALUE(e, '$.expenseCnName')                     AS expense_cn_name,
+  SAFE_CAST(JSON_VALUE(e, '$.expense') AS NUMERIC)     AS expense,
+  SAFE_CAST(JSON_VALUE(e, '$.expenseType') AS INT64)   AS expense_type,
+  JSON_VALUE(e, '$.currency')                          AS currency,
+  e                                                     AS raw_line
+FROM picked,
+     UNNEST(JSON_QUERY_ARRAY(raw_payload, '$.packageList')) AS pkg,
+     UNNEST(JSON_QUERY_ARRAY(pkg, '$.expenseList')) AS e WITH OFFSET line_no

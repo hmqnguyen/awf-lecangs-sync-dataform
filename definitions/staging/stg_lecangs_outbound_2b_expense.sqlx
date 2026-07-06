@@ -1,0 +1,26 @@
+config {
+  type: "table",
+  schema: dataform.projectConfig.vars.staging_dataset,
+  description: "Staging 2B expense — CON (expenseList): phí fulfillment 2B (express, storage, stretch wrapping, labeling...). PK (order_no, line_no), FK order_no. Nguồn fact_logistics_cost.",
+  tags: ["staging", "lecangs", "outbound_2b", "cost"],
+  bigquery: { clusterBy: ["order_no", "cost_type"] }
+}
+
+WITH latest AS (
+  SELECT *, ROW_NUMBER() OVER (
+    PARTITION BY JSON_VALUE(raw_payload, '$.orderNo') ORDER BY _ingested_at DESC
+  ) AS rn
+  FROM ${ref("raw_lecangs_outbound_2b")}
+),
+picked AS ( SELECT * FROM latest WHERE rn = 1 )
+SELECT
+  brand,
+  JSON_VALUE(raw_payload, '$.orderNo')                  AS order_no,
+  line_no + 1                                           AS line_no,
+  JSON_VALUE(e, '$.costType')                          AS cost_type,
+  JSON_VALUE(e, '$.costTypeCnName')                    AS cost_type_cn_name,
+  SAFE_CAST(JSON_VALUE(e, '$.expense') AS NUMERIC)     AS expense,
+  JSON_VALUE(e, '$.currency')                          AS currency,
+  SAFE_CAST(JSON_VALUE(e, '$.expenseType') AS INT64)   AS expense_type,
+  e                                                     AS raw_line
+FROM picked, UNNEST(JSON_QUERY_ARRAY(raw_payload, '$.expenseList')) AS e WITH OFFSET line_no

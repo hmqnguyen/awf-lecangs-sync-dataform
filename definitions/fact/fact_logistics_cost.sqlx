@@ -1,7 +1,7 @@
 config {
   type: "incremental",
   schema: dataform.projectConfig.vars.fact_dataset,
-  description: "Fact logistics cost — phí fulfillment (2C packageList.expenseList, 2B expenseList) + phí lưu kho (warehouse rent detail). Grain: 1 dòng phí. Phân bổ về SKU là bước sau (Cost Allocation).",
+  description: "Fact logistics cost — fulfillment (2C/2B expense) + storage (warehouse rent detail) + inbound first-mile (inbound flow). cost_type: fulfillment | storage | inbound. Grain: 1 dòng phí. Phân bổ về SKU là bước sau (Cost Allocation).",
   tags: ["fact", "lecangs"],
   uniqueKey: ["cost_uid"],
   bigquery: {
@@ -14,37 +14,36 @@ config {
 WITH exp_2c AS (
   SELECT
     o.brand,
-    'fulfillment'                                     AS cost_type,
-    '2C'                                              AS source,
+    'fulfillment'                    AS cost_type,
+    '2C'                             AS source,
     COALESCE(DATE(o.delivery_time), DATE(o.create_time)) AS cost_date,
     o.warehouse_code,
-    CAST(NULL AS STRING)                              AS goods_code,     -- phí ở mức package, chưa phân bổ SKU
-    o.toc_order_no                                    AS ref_no,
-    JSON_VALUE(pkg, '$.packageNo')                    AS package_no,
-    JSON_VALUE(e, '$.expenseCode')                    AS expense_code,
-    JSON_VALUE(e, '$.expenseEnName')                  AS expense_en,
-    SAFE_CAST(JSON_VALUE(e, '$.expense') AS NUMERIC)  AS amount,
-    o.total_expense_currency                          AS currency
-  FROM ${ref("stg_lecangs_outbound_2c")} AS o,
-       UNNEST(JSON_QUERY_ARRAY(o.package_list)) AS pkg,
-       UNNEST(JSON_QUERY_ARRAY(pkg, '$.expenseList')) AS e
+    CAST(NULL AS STRING)             AS goods_code,     -- phí ở mức package, chưa phân bổ SKU
+    o.toc_order_no                   AS ref_no,
+    ex.package_no,
+    ex.expense_code,
+    ex.expense_en_name               AS expense_en,
+    ex.expense                       AS amount,
+    ex.currency
+  FROM ${ref("stg_lecangs_outbound_2c_expense")} AS ex
+  JOIN ${ref("stg_lecangs_outbound_2c_order")} AS o USING (toc_order_no)
 ),
 exp_2b AS (
   SELECT
     o.brand,
-    'fulfillment'                                     AS cost_type,
-    '2B'                                              AS source,
+    CASE WHEN ex.cost_type LIKE '%Storage%' OR ex.cost_type LIKE '%仓租%' THEN 'storage' ELSE 'fulfillment' END AS cost_type,
+    '2B'                              AS source,
     COALESCE(DATE(o.delivery_time), DATE(o.create_time)) AS cost_date,
     o.warehouse_code,
-    CAST(NULL AS STRING)                              AS goods_code,
-    o.order_no                                        AS ref_no,
-    CAST(NULL AS STRING)                              AS package_no,
-    JSON_VALUE(e, '$.expenseCode')                    AS expense_code,
-    JSON_VALUE(e, '$.expenseEnName')                  AS expense_en,
-    SAFE_CAST(JSON_VALUE(e, '$.expense') AS NUMERIC)  AS amount,
-    CAST(NULL AS STRING)                              AS currency
-  FROM ${ref("stg_lecangs_outbound_2b")} AS o,
-       UNNEST(JSON_QUERY_ARRAY(o.expense_list)) AS e
+    CAST(NULL AS STRING)             AS goods_code,
+    o.order_no                       AS ref_no,
+    CAST(NULL AS STRING)             AS package_no,
+    ex.cost_type                     AS expense_code,
+    ex.cost_type_cn_name             AS expense_en,
+    ex.expense                       AS amount,
+    ex.currency
+  FROM ${ref("stg_lecangs_outbound_2b_expense")} AS ex
+  JOIN ${ref("stg_lecangs_outbound_2b_order")} AS o USING (order_no)
 ),
 storage AS (
   SELECT
@@ -62,10 +61,28 @@ storage AS (
     CAST(NULL AS STRING)                              AS currency
   FROM ${ref("stg_lecangs_warehouse_rent_detail")}
 ),
+inbound AS (
+  SELECT
+    f.brand,
+    'inbound'                                         AS cost_type,     -- first-mile / đầu vào
+    'INBOUND'                                          AS source,
+    COALESCE(DATE(f.bill_time), a.create_date)        AS cost_date,
+    a.warehouse_code,
+    CAST(NULL AS STRING)                              AS goods_code,     -- phí ở mức container/ASN, chưa phân bổ SKU
+    f.asn_no                                          AS ref_no,
+    CAST(NULL AS STRING)                              AS package_no,
+    f.cost_type                                       AS expense_code,   -- vd C_COPL, First Mile Discount, C_UnloadingSurcharge
+    f.cost_en_name                                    AS expense_en,
+    f.total_amount                                    AS amount,
+    f.currency
+  FROM ${ref("stg_lecangs_inbound_flow")} AS f
+  JOIN ${ref("stg_lecangs_inbound_asn")} AS a USING (asn_no)
+),
 unioned AS (
   SELECT * FROM exp_2c
   UNION ALL SELECT * FROM exp_2b
   UNION ALL SELECT * FROM storage
+  UNION ALL SELECT * FROM inbound
 )
 SELECT
   TO_HEX(MD5(CONCAT(source, '|', IFNULL(ref_no, ''), '|', IFNULL(package_no, ''), '|',

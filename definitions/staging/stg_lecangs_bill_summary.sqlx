@@ -1,0 +1,27 @@
+config {
+  type: "table",
+  schema: dataform.projectConfig.vars.staging_dataset,
+  description: "Staging bill summary (getByPage) — 1 bill/row, dedupe theo billing_no. Có url file Excel (đã parse sang bill_detail).",
+  tags: ["staging", "lecangs", "bill"],
+  bigquery: { partitionBy: "create_date", clusterBy: ["billing_no"] }
+}
+
+WITH parsed AS (
+  SELECT
+    brand,
+    _ingested_at,
+    JSON_VALUE(raw_payload, '$.billingNo')                    AS billing_no,
+    JSON_VALUE(raw_payload, '$.customCode')                   AS custom_code,
+    SAFE_CAST(JSON_VALUE(raw_payload, '$.billingMoney') AS NUMERIC) AS billing_money,
+    JSON_VALUE(raw_payload, '$.currency')                     AS currency,
+    SAFE.PARSE_TIMESTAMP('%Y-%m-%d %H:%M:%S', JSON_VALUE(raw_payload, '$.createTime')) AS create_time,
+    SAFE.PARSE_TIMESTAMP('%Y-%m-%d %H:%M:%S', JSON_VALUE(raw_payload, '$.billTime'))   AS bill_time,
+    JSON_VALUE(raw_payload, '$.url')                          AS file_url
+  FROM ${ref("raw_lecangs_bill_summary")}
+),
+ranked AS (
+  SELECT *, DATE(create_time) AS create_date,
+    ROW_NUMBER() OVER (PARTITION BY billing_no ORDER BY _ingested_at DESC) AS rn
+  FROM parsed
+)
+SELECT * EXCEPT(rn, _ingested_at) FROM ranked WHERE rn = 1
