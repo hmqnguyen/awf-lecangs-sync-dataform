@@ -1,9 +1,9 @@
 config {
   type: "table",
   schema: dataform.projectConfig.vars.staging_dataset,
-  description: "Staging inventory flow batch — CON của inventory_flow (flowBatchDetailVoList): biến động theo từng LÔ. PK flow_batch_id (b.$.id, bất biến), FK flow_id → inventory_flow.flow_id ($.id). raw_line giữ nguyên phần tử để không mất field.",
+  description: "Staging inventory flow batch — CON của inventory_flow (flowBatchDetailVoList): mỗi dòng = 1 lần rút FIFO của 1 flow từ 1 lô nhập. PK (flow_id, flow_batch_id, business_no). LƯU Ý: flow_batch_id (b.$.id) KHÔNG unique — 1 đơn xuất tiêu thụ nhiều lô nhập (FIFO) dùng chung b.id, phân biệt bằng business_no (ASN nguồn, verified: 14 nhóm split đều khác business_no). FK flow_id → inventory_flow. business_no = ASN nhập; out_business_no = chứng từ xuất.",
   tags: ["staging", "lecangs", "inventory"],
-  bigquery: { clusterBy: ["flow_id", "batch_code"] }
+  bigquery: { clusterBy: ["flow_id", "business_no"] }
 }
 
 WITH latest AS (
@@ -15,18 +15,19 @@ WITH latest AS (
 picked AS ( SELECT * FROM latest WHERE rn = 1 )
 SELECT
   brand,
-  SAFE_CAST(JSON_VALUE(b, '$.id') AS INT64)                AS flow_batch_id,  -- PK: id riêng của phần tử batch (bất biến)
-  SAFE_CAST(JSON_VALUE(raw_payload, '$.id') AS INT64)      AS flow_id,        -- FK → inventory_flow.flow_id
-  JSON_VALUE(raw_payload, '$.serialNo')                    AS serial_no,      -- tham chiếu phụ (dễ đọc)
-  line_no + 1                                              AS line_no,        -- vị trí trong mảng (chỉ tham khảo, KHÔNG dùng làm khóa)
+  SAFE_CAST(JSON_VALUE(b, '$.id') AS INT64)                AS flow_batch_id,   -- 1 phần khóa; b.$.id dùng chung cho các dòng split FIFO → cần thêm business_no
+  SAFE_CAST(JSON_VALUE(raw_payload, '$.id') AS INT64)      AS flow_id,         -- FK → inventory_flow.flow_id
+  JSON_VALUE(raw_payload, '$.serialNo')                    AS serial_no,       -- tham chiếu phụ
 
-  -- ⚠️ VERIFY tên field với payload thật (chưa có mẫu flowBatchDetailVoList). Sai → cột NULL, raw_line vẫn giữ đủ.
-  JSON_VALUE(b, '$.batchCode')                             AS batch_code,     -- ⚠️ có thể là itemBatchCode / lecangsBatchCode
-  JSON_VALUE(b, '$.goodsCode')                             AS goods_code,     -- ⚠️
-  SAFE_CAST(JSON_VALUE(b, '$.goodsNum') AS INT64)          AS qty_delta,      -- ⚠️ qty của lô này (tổng = flow.qty_delta)
-  SAFE_CAST(JSON_VALUE(b, '$.goodsLevel') AS INT64)        AS goods_level,    -- ⚠️
-  ${lecangs.ts("JSON_VALUE(b, '$.warehouseDate')")}        AS warehouse_date, -- ⚠️ ngày nhập của lô (FIFO/aging)
+  JSON_VALUE(b, '$.businessNo')                            AS business_no,     -- ASN NHẬP của lô (vd ASN-WOOD-250906-001) → truy gốc lô + tuổi lô
+  JSON_VALUE(b, '$.outBusinessNo')                         AS out_business_no, -- chứng từ XUẤT tiêu thụ lô (vd WOOD-251110-00017)
+  JSON_VALUE(b, '$.lecangsCode')                           AS lecangs_code,    -- mã Lecangs (goods_code AFW join từ parent qua flow_id)
 
-  b                                                        AS raw_line        -- an toàn: giữ nguyên phần tử JSON
+  SAFE_CAST(JSON_VALUE(b, '$.goodsNum') AS INT64)          AS qty_delta,       -- +tăng / -giảm cho lô này
+  SAFE_CAST(JSON_VALUE(b, '$.beforeNum') AS INT64)         AS before_num,      -- tồn lô TRƯỚC thay đổi
+  SAFE_CAST(JSON_VALUE(b, '$.afterNum') AS INT64)          AS after_num,       -- tồn lô SAU thay đổi (số dư chạy)
+  ${lecangs.ts("JSON_VALUE(b, '$.createTime')")}           AS create_time,     -- thời điểm biến động lô
+
+  b                                                        AS raw_line
 FROM picked,
      UNNEST(JSON_QUERY_ARRAY(raw_payload, '$.flowBatchDetailVoList')) AS b WITH OFFSET line_no
