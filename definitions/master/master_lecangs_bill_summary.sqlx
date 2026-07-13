@@ -1,0 +1,26 @@
+config {
+  type: "incremental",
+  schema: dataform.projectConfig.vars.master_dataset,
+  assertions: {
+    uniqueKey: ["billing_no"],
+    nonNull: ["billing_no"]
+  },
+  description: "Master bill summary (PARENT) — trạng thái MỚI NHẤT theo billing_no. MERGE uniqueKey → đổi thì UPDATE đè. Incremental theo _loaded_at (backfill-safe).",
+  tags: ["master", "lecangs", "bill"],
+  uniqueKey: ["billing_no"],
+  bigquery: { clusterBy: ["billing_no"] }
+}
+
+-- First-run safety (Amazon-style): incremental() can compile ${self()} in the watermark
+-- subquery even when the target table does not exist yet (fresh env / prod first deploy).
+-- Pre-create an EMPTY table with correct schema + partition/cluster. AS SELECT ... WHERE FALSE
+-- avoids hand-listing columns (keeps SELECT * masters debt-free, lesson #8). No-op once the
+-- table exists (e.g. after --full-refresh).
+pre_operations {
+  CREATE TABLE IF NOT EXISTS ${self()}
+  CLUSTER BY billing_no AS
+  SELECT * FROM ${ref("stg_lecangs_bill_summary")} WHERE FALSE
+}
+
+SELECT * FROM ${ref("stg_lecangs_bill_summary")}
+${when(incremental(), `WHERE _loaded_at > (SELECT COALESCE(MAX(_loaded_at), TIMESTAMP('1970-01-01')) FROM ${self()})`)}

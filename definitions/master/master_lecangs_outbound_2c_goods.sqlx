@@ -1,0 +1,29 @@
+config {
+  type: "incremental",
+  schema: dataform.projectConfig.vars.master_dataset,
+  assertions: {
+    uniqueKey: ["toc_order_no", "package_no", "goods_code"],
+    nonNull: ["toc_order_no", "package_no"]
+  },
+  description: "Master 2C goods (CON của 2C order) — pattern XÓA + ĐỔ LẠI: khi order đổi (cha có _loaded_at mới), xóa toàn bộ dòng con của order đó rồi insert lại từ staging → xử lý đúng cả thêm/sửa/XÓA line. uniqueKey làm lưới an toàn chống trùng.",
+  tags: ["master", "lecangs", "outbound_2c"],
+  uniqueKey: ["toc_order_no", "package_no", "goods_code"],
+  bigquery: { clusterBy: ["toc_order_no", "goods_code"] }
+}
+
+pre_operations {
+  -- XÓA con của các order VỪA THAY ĐỔI (cha có _loaded_at mới) trước khi đổ lại → gỡ được line đã bị xóa ở nguồn.
+  ${when(incremental(), `
+    DELETE FROM ${self()}
+    WHERE toc_order_no IN (
+      SELECT DISTINCT toc_order_no
+      FROM ${ref("stg_lecangs_outbound_2c_goods")}
+      WHERE _loaded_at > (SELECT COALESCE(MAX(_loaded_at), TIMESTAMP('1970-01-01')) FROM ${self()})
+    )
+  `)}
+}
+
+-- ĐỔ LẠI con mới; uniqueKey MERGE đảm bảo idempotent (không nhân bản dù có re-select biên).
+SELECT * FROM ${ref("stg_lecangs_outbound_2c_goods")}
+${when(incremental(),
+  `WHERE _loaded_at > (SELECT COALESCE(MAX(_loaded_at), TIMESTAMP('1970-01-01')) FROM ${self()})`)}

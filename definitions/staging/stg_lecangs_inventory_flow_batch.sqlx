@@ -28,6 +28,7 @@ SELECT
   SAFE_CAST(JSON_VALUE(b, '$.afterNum') AS INT64)          AS after_num,       -- tồn lô SAU thay đổi (số dư chạy)
   ${lecangs.ts("JSON_VALUE(b, '$.createTime')")}           AS create_time,     -- thời điểm biến động lô
 
-  b                                                        AS raw_line
+  b                                                        AS raw_line,
+  _ingested_at AS _loaded_at
 FROM picked,
      UNNEST(JSON_QUERY_ARRAY(raw_payload, '$.flowBatchDetailVoList')) AS b WITH OFFSET line_no

@@ -1,0 +1,34 @@
+config {
+  type: "table",
+  schema: dataform.projectConfig.vars.mart_dataset,
+  assertions: {
+    uniqueKey: ["out_business_no"],
+    nonNull: ["out_business_no"]
+  },
+  description: "Chi phí logistics gộp theo ĐƠN đã xuất, cơ sở CBM, tách cột theo loại phí. Rollup từ fact_lecangs_order_logistics_cost.",
+  tags: ["mart", "lecangs", "logistics_alloc", "castlegate"],
+  bigquery: { partitionBy: "ship_date", clusterBy: ["out_business_no"] }
+}
+
+SELECT
+  out_business_no,
+  ANY_VALUE(ship_date)                        AS ship_date,
+  COUNT(*)                                     AS batch_lines,
+  COUNT(DISTINCT business_no)                  AS source_asn_count,
+  SUM(qty_out)                                 AS total_qty,
+  ROUND(SUM(out_cbm),5)                        AS total_cbm,
+  ROUND(SUM(out_cbm*holding_days)/NULLIF(SUM(out_cbm),0),1) AS wavg_holding_days,  -- gia quyền theo CBM
+
+  ROUND(SUM(storage_cost),4)                   AS storage_cost,
+  ROUND(SUM(inbound_discount),4)               AS inbound_discount,
+  ROUND(SUM(inbound_unloading),4)              AS inbound_unloading,
+  ROUND(SUM(inbound_container),4)              AS inbound_container,
+  ROUND(SUM(inbound_other),4)                  AS inbound_other,
+  ROUND(SUM(inbound_cost),4)                   AS inbound_cost,
+  ROUND(SUM(total_logistics_cost),4)           AS total_logistics_cost,
+  ANY_VALUE(currency)                          AS currency,
+
+  ROUND(SUM(IF(castlegate_storage_free, storage_cost, 0)),4)        AS castlegate_storage_saving,
+  ROUND(SUM(total_logistics_cost) - SUM(IF(castlegate_storage_free, storage_cost, 0)),4) AS total_cost_if_castlegate
+FROM ${ref("fact_lecangs_order_logistics_cost")}
+GROUP BY out_business_no

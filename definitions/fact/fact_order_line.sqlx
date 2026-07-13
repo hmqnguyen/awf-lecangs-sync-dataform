@@ -1,6 +1,10 @@
 config {
   type: "incremental",
   schema: dataform.projectConfig.vars.fact_dataset,
+  assertions: {
+    uniqueKey: ["line_uid"],
+    nonNull: ["line_uid"]
+  },
   description: "Fact order line — dòng hàng xuất, hợp nhất 2C (packageList→goodsList) và 2B (omsTobOrderGoodsVoList). Grain: order_type × order_no × package × goods_code.",
   tags: ["fact", "lecangs"],
   uniqueKey: ["line_uid"],
@@ -25,8 +29,8 @@ WITH lines_2c AS (
     o.consignee_country              AS dest_country,
     o.consignee_province             AS dest_state,
     o.create_date                    AS order_date
-  FROM ${ref("stg_lecangs_outbound_2c_goods")} AS gd
-  JOIN ${ref("stg_lecangs_outbound_2c_order")} AS o USING (toc_order_no)
+  FROM ${ref("master_lecangs_outbound_2c_goods")} AS gd
+  JOIN ${ref("master_lecangs_outbound_2c_order")} AS o USING (toc_order_no)
 ),
 lines_2b AS (
   SELECT
@@ -42,8 +46,8 @@ lines_2b AS (
     o.consignee_country              AS dest_country,
     o.consignee_province             AS dest_state,
     o.create_date                    AS order_date
-  FROM ${ref("stg_lecangs_outbound_2b_goods")} AS gd
-  JOIN ${ref("stg_lecangs_outbound_2b_order")} AS o USING (order_no)
+  FROM ${ref("master_lecangs_outbound_2b_goods")} AS gd
+  JOIN ${ref("master_lecangs_outbound_2b_order")} AS o USING (order_no)
 ),
 unioned AS (
   SELECT * FROM lines_2c

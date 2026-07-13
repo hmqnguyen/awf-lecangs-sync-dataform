@@ -22,5 +22,6 @@ SELECT
   JSON_VALUE(g, '$.validStatus')                       AS valid_status,
   SAFE_CAST(JSON_VALUE(g, '$.planNum') AS INT64)       AS plan_num,
   SAFE_CAST(JSON_VALUE(g, '$.actualNum') AS INT64)     AS actual_num,
-  g                                                     AS raw_line
+  g                                                     AS raw_line,
+  _ingested_at AS _loaded_at
 FROM picked, UNNEST(JSON_QUERY_ARRAY(raw_payload, '$.omsTobOrderGoodsVoList')) AS g WITH OFFSET line_no

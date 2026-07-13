@@ -24,7 +24,8 @@ SELECT
   SAFE_CAST(JSON_VALUE(e, '$.expense') AS NUMERIC)     AS expense,
   SAFE_CAST(JSON_VALUE(e, '$.expenseType') AS INT64)   AS expense_type,
   JSON_VALUE(e, '$.currency')                          AS currency,
-  e                                                     AS raw_line
+  e                                                     AS raw_line,
+  _ingested_at AS _loaded_at
 FROM picked,
      UNNEST(JSON_QUERY_ARRAY(raw_payload, '$.packageList')) AS pkg,
      UNNEST(JSON_QUERY_ARRAY(pkg, '$.expenseList')) AS e WITH OFFSET line_no

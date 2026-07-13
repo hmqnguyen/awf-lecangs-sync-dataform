@@ -1,0 +1,29 @@
+config {
+  type: "incremental",
+  schema: dataform.projectConfig.vars.master_dataset,
+  assertions: {
+    uniqueKey: ["toc_order_no"],
+    nonNull: ["toc_order_no"]
+  },
+  description: "Master 2C order (PARENT) — giữ TRẠNG THÁI MỚI NHẤT theo toc_order_no. MERGE uniqueKey → order đổi status (submitted→shipped) sẽ UPDATE đè. Incremental theo _loaded_at (backfill-safe, không phụ thuộc business date).",
+  tags: ["master", "lecangs", "outbound_2c"],
+  uniqueKey: ["toc_order_no"],
+  bigquery: { partitionBy: "create_date", clusterBy: ["toc_order_no"] }
+}
+
+-- First-run safety (Amazon-style): incremental() can compile ${self()} in the watermark
+-- subquery even when the target table does not exist yet (fresh env / prod first deploy).
+-- Pre-create an EMPTY table with correct schema + partition/cluster. AS SELECT ... WHERE FALSE
+-- avoids hand-listing columns (keeps SELECT * masters debt-free, lesson #8). No-op once the
+-- table exists (e.g. after --full-refresh).
+pre_operations {
+  CREATE TABLE IF NOT EXISTS ${self()}
+  PARTITION BY create_date CLUSTER BY toc_order_no AS
+  SELECT * FROM ${ref("stg_lecangs_outbound_2c_order")} WHERE FALSE
+}
+
+-- PARENT latest-state: uniqueKey=toc_order_no → trùng khóa = UPDATE (đè trạng thái mới), khóa mới = INSERT.
+-- Incremental: chỉ kéo staging có _loaded_at mới hơn watermark trong master.
+SELECT * FROM ${ref("stg_lecangs_outbound_2c_order")}
+${when(incremental(),
+  `WHERE _loaded_at > (SELECT COALESCE(MAX(_loaded_at), TIMESTAMP('1970-01-01')) FROM ${self()})`)}

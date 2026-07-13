@@ -59,6 +59,7 @@ SELECT
   JSON_VALUE(raw_payload, '$.omsTocOrderConsigneeVo.doorplate')       AS consignee_doorplate,
   SAFE_CAST(JSON_VALUE(raw_payload, '$.omsTocOrderConsigneeVo.addressType') AS INT64) AS consignee_address_type,
 
-  DATE(${lecangs.ts("JSON_VALUE(raw_payload, '$.createTime')")}) AS create_date
+  DATE(${lecangs.ts("JSON_VALUE(raw_payload, '$.createTime')")}) AS create_date,
+  _ingested_at AS _loaded_at
 FROM latest
 WHERE rn = 1

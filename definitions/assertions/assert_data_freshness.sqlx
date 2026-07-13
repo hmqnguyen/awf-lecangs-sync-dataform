@@ -1,0 +1,44 @@
+config {
+  type: "assertion",
+  schema: dataform.projectConfig.vars.staging_dataset,
+  name: "assert_data_freshness",
+  description: "CỜ ĐỎ: bảng theo-ngày ĐỨNG YÊN quá lâu ⇒ JOB SYNC ĐÃ CHẾT. assert_no_date_gaps MÙ với ca này (nó lấy MAX từ chính bảng → job chết thì MAX lùi theo → 'không có lỗ hổng'). Assertion này neo vào CURRENT_DATE(). FAIL nếu MAX(date) trễ hơn ngưỡng. Rỗng = pass.",
+  tags: ["assertion", "lecangs", "data_quality", "freshness"]
+}
+
+/*
+  ═══════════════════════════════════════════════════════════════════════════
+  ⚠️ LƯU Ý MÔI TRƯỜNG DEV (2026-07-13)
+  Dev hiện là BACKFILL TĨNH (chưa có sync live; secretKey PROD chưa có). Dữ liệu
+  đứng yên ~7-8 ngày → assertion NÀY SẼ ĐỎ trong dev. ĐÓ LÀ ĐÚNG: không có job
+  nào đang cập nhật. Đây là guard cho PROD/live-sync.
+  → Khi chạy dev trên backfill tĩnh, loại trừ tag "freshness" nếu không muốn pipeline
+    đỏ; ở prod (sync chạy hằng ngày) thì để assertion này bật.
+  ═══════════════════════════════════════════════════════════════════════════
+  NGƯỠNG = độ trễ tự nhiên + đệm. ĐỪNG nới ngưỡng chỉ để "cho pipeline xanh".
+    stg_lecangs_inventory              snapshot daily          → 2
+    stg_lecangs_warehouse_rent_summary billing daily (+ điều   → 3
+                                       chỉnh hồi tố, xem rent
+                                       ReprocessDays=45)
+  KHÔNG áp cho order/2b/2c/inbound — dữ liệu theo SỰ KIỆN.
+*/
+
+WITH freshness AS (
+  SELECT 'stg_lecangs_inventory' AS table_name,
+         MAX(DATE(snapshot_date)) AS last_date, 2 AS max_lag_days
+  FROM ${ref("stg_lecangs_inventory")}
+  UNION ALL
+  SELECT 'stg_lecangs_warehouse_rent_summary',
+         MAX(DATE(billing_date)), 3
+  FROM ${ref("stg_lecangs_warehouse_rent_summary")}
+)
+
+SELECT
+  table_name,
+  last_date,
+  max_lag_days,
+  DATE_DIFF(CURRENT_DATE(), last_date, DAY) AS actual_lag_days
+FROM freshness
+WHERE last_date IS NULL
+   OR DATE_DIFF(CURRENT_DATE(), last_date, DAY) > max_lag_days
+ORDER BY table_name

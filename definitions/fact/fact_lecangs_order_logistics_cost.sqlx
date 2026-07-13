@@ -1,0 +1,96 @@
+config {
+  type: "table",
+  schema: dataform.projectConfig.vars.fact_dataset,
+  assertions: {
+    uniqueKey: ["out_business_no", "business_no", "lecangs_code"],
+    nonNull: ["out_business_no", "business_no"]
+  },
+  description: "Phân bổ chi phí logistics vào ĐƠN ĐÃ XUẤT, cơ sở = THỂ TÍCH (CBM). STORAGE (warehouse_rent) theo cbm-days (cbm×holding); INBOUND/first-mile (ASN flows) theo cbm share. Grain: đơn × lô nhập × SKU. Phần còn tồn ở mẫu số → chỉ gánh phần đã xuất.",
+  tags: ["fact", "lecangs", "logistics_alloc", "castlegate"],
+  bigquery: { partitionBy: "ship_date", clusterBy: ["out_business_no", "business_no"] }
+}
+
+WITH
+batch_storage AS (
+  SELECT business_no, lecangs_code, SUM(expense) AS storage_pool, ANY_VALUE(currency) AS currency
+  FROM ${ref("master_lecangs_warehouse_rent_detail")}
+  WHERE business_no IS NOT NULL GROUP BY business_no, lecangs_code
+),
+inbound_cost AS (
+  SELECT asn_no AS business_no,
+    SUM(total_amount) AS inbound_pool,
+    SUM(IF(cost_en_name LIKE '%Discount%' OR cost_cn_name LIKE '%优惠%', total_amount, 0))  AS fm_discount,
+    SUM(IF(cost_en_name LIKE '%Unloading%' OR cost_cn_name LIKE '%卸柜%', total_amount, 0)) AS fm_unloading,
+    SUM(IF(cost_type LIKE '%COPL%' OR cost_cn_name LIKE '%整柜%' OR cost_cn_name LIKE '%托%', total_amount, 0)) AS fm_container,
+    SUM(IF(NOT (cost_en_name LIKE '%Discount%' OR cost_cn_name LIKE '%优惠%'
+             OR cost_en_name LIKE '%Unloading%' OR cost_cn_name LIKE '%卸柜%'
+             OR cost_type LIKE '%COPL%' OR cost_cn_name LIKE '%整柜%' OR cost_cn_name LIKE '%托%'), total_amount, 0)) AS fm_other
+  FROM ${ref("master_lecangs_inbound_flow")} GROUP BY asn_no
+),
+inbound AS (
+  SELECT asn_no AS business_no, DATE(receiving_date) AS inbound_date
+  FROM ${ref("master_lecangs_inbound_asn")}
+),
+-- CBM/đơn vị theo (lô × SKU): volume ÷ goods_num (từ rent_detail, fallback inventory)
+sku_cbm AS (
+  SELECT business_no, lecangs_code,
+         ANY_VALUE(SAFE_DIVIDE(volume, NULLIF(goods_num,0))) AS unit_cbm
+  FROM (
+    SELECT business_no, lecangs_code, volume, goods_num FROM ${ref("master_lecangs_warehouse_rent_detail")} WHERE goods_num > 0
+    UNION ALL
+    SELECT business_no, lecangs_code, volume, goods_num FROM ${ref("master_lecangs_inventory")} WHERE goods_num > 0
+  ) GROUP BY business_no, lecangs_code
+),
+consumption AS (
+  SELECT fb.out_business_no, fb.business_no, fb.lecangs_code,
+         ABS(fb.qty_delta) AS qty_out,
+         ABS(fb.qty_delta) * cbm.unit_cbm AS out_cbm,
+         DATE(fb.create_time) AS ship_date, ib.inbound_date,
+         GREATEST(DATE_DIFF(DATE(fb.create_time), ib.inbound_date, DAY), 0) AS holding_days
+  FROM ${ref("master_lecangs_inventory_flow_batch")} fb
+  LEFT JOIN inbound ib ON ib.business_no = fb.business_no
+  LEFT JOIN sku_cbm cbm USING (business_no, lecangs_code)
+  WHERE fb.qty_delta < 0 AND fb.out_business_no IS NOT NULL
+),
+-- mẫu số STORAGE: cbm-days (đã xuất + còn tồn) theo (lô × SKU)
+remaining_sku AS (
+  SELECT business_no, lecangs_code, SUM(volume*inventory_age) AS rem_cbm_days
+  FROM ${ref("master_lecangs_inventory")} WHERE business_no IS NOT NULL GROUP BY business_no, lecangs_code
+),
+storage_basis AS (
+  SELECT c.business_no, c.lecangs_code,
+         SUM(c.out_cbm*c.holding_days) + COALESCE(ANY_VALUE(r.rem_cbm_days),0) AS total_cbm_days
+  FROM consumption c LEFT JOIN remaining_sku r USING (business_no, lecangs_code)
+  GROUP BY c.business_no, c.lecangs_code
+),
+-- mẫu số INBOUND: tổng CBM của LÔ (mọi SKU: đã xuất + còn tồn)
+asn_volume AS (
+  SELECT business_no, SUM(v) AS asn_total_cbm FROM (
+    SELECT business_no, SUM(out_cbm) AS v FROM consumption GROUP BY business_no
+    UNION ALL
+    SELECT business_no, SUM(volume) AS v FROM ${ref("master_lecangs_inventory")} WHERE business_no IS NOT NULL GROUP BY business_no
+  ) GROUP BY business_no
+)
+
+SELECT
+  c.out_business_no, c.business_no, c.lecangs_code, c.ship_date, c.inbound_date,
+  c.holding_days, c.qty_out, ROUND(c.out_cbm, 5) AS out_cbm,
+
+  ROUND(bs.storage_pool * SAFE_DIVIDE(c.out_cbm*c.holding_days, sb.total_cbm_days), 4) AS storage_cost,
+
+  ROUND(ic.fm_discount  * SAFE_DIVIDE(c.out_cbm, av.asn_total_cbm), 4) AS inbound_discount,
+  ROUND(ic.fm_unloading * SAFE_DIVIDE(c.out_cbm, av.asn_total_cbm), 4) AS inbound_unloading,
+  ROUND(ic.fm_container * SAFE_DIVIDE(c.out_cbm, av.asn_total_cbm), 4) AS inbound_container,
+  ROUND(ic.fm_other     * SAFE_DIVIDE(c.out_cbm, av.asn_total_cbm), 4) AS inbound_other,
+  ROUND(ic.inbound_pool * SAFE_DIVIDE(c.out_cbm, av.asn_total_cbm), 4) AS inbound_cost,
+
+  ROUND(
+    bs.storage_pool  * SAFE_DIVIDE(c.out_cbm*c.holding_days, sb.total_cbm_days)
+    + ic.inbound_pool * SAFE_DIVIDE(c.out_cbm, av.asn_total_cbm), 4)                     AS total_logistics_cost,
+  COALESCE(bs.currency, 'USD') AS currency,
+  c.holding_days < 90 AS castlegate_storage_free
+FROM consumption c
+LEFT JOIN batch_storage bs USING (business_no, lecangs_code)
+LEFT JOIN storage_basis sb USING (business_no, lecangs_code)
+LEFT JOIN inbound_cost  ic USING (business_no)
+LEFT JOIN asn_volume    av USING (business_no)

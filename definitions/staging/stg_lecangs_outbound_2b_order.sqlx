@@ -57,6 +57,7 @@ SELECT
   JSON_VALUE(raw_payload, '$.omsTobOrderExpressInfoVo.carrierNameOther')  AS express_carrier_name_other,
   JSON_VALUE(raw_payload, '$.omsTobOrderExpressInfoVo.trackingNo')        AS express_tracking_no,
 
-  DATE(${lecangs.ts("JSON_VALUE(raw_payload, '$.createTime')")}) AS create_date
+  DATE(${lecangs.ts("JSON_VALUE(raw_payload, '$.createTime')")}) AS create_date,
+  _ingested_at AS _loaded_at
 FROM latest
 WHERE rn = 1

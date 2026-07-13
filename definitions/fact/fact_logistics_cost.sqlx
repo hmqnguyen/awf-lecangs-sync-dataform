@@ -1,6 +1,10 @@
 config {
   type: "incremental",
   schema: dataform.projectConfig.vars.fact_dataset,
+  assertions: {
+    uniqueKey: ["cost_uid"],
+    nonNull: ["cost_uid"]
+  },
   description: "Fact logistics cost — fulfillment (2C/2B expense) + storage (warehouse rent detail) + inbound first-mile (inbound flow). cost_type: fulfillment | storage | inbound. Grain: 1 dòng phí. Phân bổ về SKU là bước sau (Cost Allocation).",
   tags: ["fact", "lecangs"],
   uniqueKey: ["cost_uid"],
@@ -25,8 +29,8 @@ WITH exp_2c AS (
     ex.expense_en_name               AS expense_en,
     ex.expense                       AS amount,
     ex.currency
-  FROM ${ref("stg_lecangs_outbound_2c_expense")} AS ex
-  JOIN ${ref("stg_lecangs_outbound_2c_order")} AS o USING (toc_order_no)
+  FROM ${ref("master_lecangs_outbound_2c_expense")} AS ex
+  JOIN ${ref("master_lecangs_outbound_2c_order")} AS o USING (toc_order_no)
 ),
 exp_2b AS (
   SELECT
@@ -42,8 +46,8 @@ exp_2b AS (
     ex.cost_type_cn_name             AS expense_en,
     ex.expense                       AS amount,
     ex.currency
-  FROM ${ref("stg_lecangs_outbound_2b_expense")} AS ex
-  JOIN ${ref("stg_lecangs_outbound_2b_order")} AS o USING (order_no)
+  FROM ${ref("master_lecangs_outbound_2b_expense")} AS ex
+  JOIN ${ref("master_lecangs_outbound_2b_order")} AS o USING (order_no)
 ),
 storage AS (
   SELECT
@@ -59,7 +63,7 @@ storage AS (
     'Daily storage rent'                              AS expense_en,
     expense                                           AS amount,
     CAST(NULL AS STRING)                              AS currency
-  FROM ${ref("stg_lecangs_warehouse_rent_detail")}
+  FROM ${ref("master_lecangs_warehouse_rent_detail")}
 ),
 inbound AS (
   SELECT
@@ -75,8 +79,8 @@ inbound AS (
     f.cost_en_name                                    AS expense_en,
     f.total_amount                                    AS amount,
     f.currency
-  FROM ${ref("stg_lecangs_inbound_flow")} AS f
-  JOIN ${ref("stg_lecangs_inbound_asn")} AS a USING (asn_no)
+  FROM ${ref("master_lecangs_inbound_flow")} AS f
+  JOIN ${ref("master_lecangs_inbound_asn")} AS a USING (asn_no)
 ),
 unioned AS (
   SELECT * FROM exp_2c

@@ -1,0 +1,22 @@
+config {
+  type: "incremental",
+  schema: dataform.projectConfig.vars.master_dataset,
+  assertions: {
+    uniqueKey: ["asn_no", "goods_code"],
+    nonNull: ["asn_no", "goods_code"]
+  },
+  description: "Master inbound line (CON của asn_no) — XÓA + ĐỔ LẠI: cha đổi (_loaded_at mới) → xóa hết con của asn_no rồi insert lại → xử lý thêm/sửa/XÓA line. uniqueKey lưới an toàn.",
+  tags: ["master", "lecangs", "inbound"],
+  uniqueKey: ["asn_no", "goods_code"],
+  bigquery: { clusterBy: ["asn_no", "goods_code"] }
+}
+
+pre_operations {
+  ${when(incremental(), `
+    DELETE FROM ${self()}
+    WHERE asn_no IN (SELECT DISTINCT asn_no FROM ${ref("stg_lecangs_inbound_line")} WHERE _loaded_at > (SELECT COALESCE(MAX(_loaded_at), TIMESTAMP('1970-01-01')) FROM ${self()}))
+  `)}
+}
+
+SELECT * FROM ${ref("stg_lecangs_inbound_line")}
+${when(incremental(), `WHERE _loaded_at > (SELECT COALESCE(MAX(_loaded_at), TIMESTAMP('1970-01-01')) FROM ${self()})`)}

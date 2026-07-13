@@ -1,0 +1,22 @@
+config {
+  type: "incremental",
+  schema: dataform.projectConfig.vars.master_dataset,
+  assertions: {
+    uniqueKey: ["flow_id", "flow_batch_id", "business_no"],
+    nonNull: ["flow_id", "business_no"]
+  },
+  description: "Master inventory flow batch (CON của flow_id) — XÓA + ĐỔ LẠI: cha đổi (_loaded_at mới) → xóa hết con của flow_id rồi insert lại → xử lý thêm/sửa/XÓA line. uniqueKey lưới an toàn.",
+  tags: ["master", "lecangs", "inventory"],
+  uniqueKey: ["flow_id", "flow_batch_id", "business_no"],
+  bigquery: { clusterBy: ["flow_id", "business_no"] }
+}
+
+pre_operations {
+  ${when(incremental(), `
+    DELETE FROM ${self()}
+    WHERE flow_id IN (SELECT DISTINCT flow_id FROM ${ref("stg_lecangs_inventory_flow_batch")} WHERE _loaded_at > (SELECT COALESCE(MAX(_loaded_at), TIMESTAMP('1970-01-01')) FROM ${self()}))
+  `)}
+}
+
+SELECT * FROM ${ref("stg_lecangs_inventory_flow_batch")}
+${when(incremental(), `WHERE _loaded_at > (SELECT COALESCE(MAX(_loaded_at), TIMESTAMP('1970-01-01')) FROM ${self()})`)}

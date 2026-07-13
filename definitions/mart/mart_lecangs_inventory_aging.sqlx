@@ -1,0 +1,64 @@
+config {
+  type: "table",
+  schema: dataform.projectConfig.vars.mart_dataset,
+  assertions: {
+    uniqueKey: ["snapshot_date", "warehouse_code", "sku", "batch_asn", "inbound_date"],
+    nonNull: ["warehouse_code", "sku"]
+  },
+  description: "Tuổi tồn kho theo SKU × LÔ NHẬP (business_no/ASN) kèm TỔNG chi phí thuê kho của lô. Grain: warehouse × sku × lô (snapshot mới nhất). Dùng cho aging + quyết định xả/chuyển kho + so Castlegate (free 90 ngày).",
+  tags: ["mart", "lecangs", "inventory_aging", "castlegate"],
+  bigquery: { partitionBy: "snapshot_date", clusterBy: ["warehouse_code", "sku"] }
+}
+
+WITH
+-- tổng chi phí thuê kho tích luỹ mỗi (lô × SKU)
+rent AS (
+  SELECT business_no, lecangs_code,
+         ROUND(SUM(expense), 4)  AS total_rent_cost,
+         MIN(billing_date)       AS first_billing_date,
+         MAX(billing_date)       AS last_billing_date,
+         COUNT(DISTINCT billing_date) AS billed_days,
+         ANY_VALUE(currency)     AS currency
+  FROM ${ref("master_lecangs_warehouse_rent_detail")}
+  WHERE business_no IS NOT NULL
+  GROUP BY business_no, lecangs_code
+),
+inv AS (
+  SELECT * FROM ${ref("master_lecangs_inventory")}
+  WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM ${ref("master_lecangs_inventory")})
+)
+
+SELECT
+  i.brand,
+  i.snapshot_date,
+  i.warehouse_code,
+  i.goods_code                       AS sku,
+  i.business_no                      AS batch_asn,          -- lô nhập
+  i.lecangs_code,
+  i.en_name                          AS product_name,
+  DATE(i.warehouse_date)             AS inbound_date,       -- ngày vào kho của lô
+  i.inventory_age                    AS age_days,
+  CASE
+    WHEN i.inventory_age BETWEEN 0   AND 30  THEN '0-30'
+    WHEN i.inventory_age BETWEEN 31  AND 60  THEN '31-60'
+    WHEN i.inventory_age BETWEEN 61  AND 90  THEN '61-90'
+    WHEN i.inventory_age BETWEEN 91  AND 180 THEN '91-180'
+    WHEN i.inventory_age BETWEEN 181 AND 270 THEN '181-270'
+    WHEN i.inventory_age BETWEEN 271 AND 365 THEN '271-365'
+    ELSE '366+'
+  END                                AS age_bucket,
+  i.goods_num                        AS qty_on_hand,
+  ROUND(i.volume, 4)                 AS cbm_on_hand,
+
+  r.total_rent_cost,                                        -- TỔNG phí thuê kho tích luỹ của lô×SKU
+  r.first_billing_date,
+  r.last_billing_date,
+  r.billed_days,
+  COALESCE(r.currency, 'USD')        AS currency,
+  ROUND(SAFE_DIVIDE(r.total_rent_cost, NULLIF(i.goods_num,0)), 4) AS rent_cost_per_unit_onhand,
+
+  -- Castlegate: lô <90 ngày sẽ miễn phí lưu kho
+  i.inventory_age < 90               AS free_at_castlegate,
+  IF(i.inventory_age < 90, r.total_rent_cost, 0)            AS rent_saving_if_castlegate
+FROM inv i
+LEFT JOIN rent r ON r.business_no = i.business_no AND r.lecangs_code = i.lecangs_code

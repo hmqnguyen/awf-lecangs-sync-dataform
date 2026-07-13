@@ -1,0 +1,15 @@
+config {
+  type: "incremental",
+  schema: dataform.projectConfig.vars.master_dataset,
+  assertions: {
+    uniqueKey: ["daily_expense_id", "detail_id"],
+    nonNull: ["daily_expense_id", "detail_id"]
+  },
+  description: "Master rent detail (CON độc lập) — latest-state theo daily_expense_id, detail_id (dòng chi tiết bất biến). Incremental theo _loaded_at.",
+  tags: ["master", "lecangs", "warehouse_rent"],
+  uniqueKey: ["daily_expense_id", "detail_id"],
+  bigquery: { partitionBy: "billing_date", clusterBy: ["goods_code"] }
+}
+
+SELECT * FROM ${ref("stg_lecangs_warehouse_rent_detail")}
+${when(incremental(), `WHERE _loaded_at > (SELECT COALESCE(MAX(_loaded_at), TIMESTAMP('1970-01-01')) FROM ${self()})`)}

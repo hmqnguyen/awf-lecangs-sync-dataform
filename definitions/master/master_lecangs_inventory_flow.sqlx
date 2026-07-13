@@ -1,10 +1,25 @@
 config {
   type: "incremental",
   schema: dataform.projectConfig.vars.master_dataset,
+  assertions: {
+    uniqueKey: ["serial_no"],
+    nonNull: ["serial_no"]
+  },
   description: "Master inventory flow — ledger bất biến, tích luỹ toàn bộ lịch sử theo serial_no (staging chỉ giữ cửa sổ gần đây; master giữ hết).",
   tags: ["master", "lecangs"],
   uniqueKey: ["serial_no"],
   bigquery: { partitionBy: "flow_date", clusterBy: ["goods_code"] }
+}
+
+-- First-run safety (Amazon-style): incremental() can compile ${self()} in the watermark
+-- subquery even when the target table does not exist yet (fresh env / prod first deploy).
+-- Pre-create an EMPTY table with correct schema + partition/cluster. AS SELECT ... WHERE FALSE
+-- avoids hand-listing columns (keeps SELECT * masters debt-free, lesson #8). No-op once the
+-- table exists (e.g. after --full-refresh).
+pre_operations {
+  CREATE TABLE IF NOT EXISTS ${self()}
+  PARTITION BY flow_date CLUSTER BY goods_code AS
+  SELECT brand, serial_no, flow_date, warehouse_code, business_no, business_type, business_type_label, goods_code, lecangs_code, en_name, cn_name, qty_delta, update_time, _loaded_at FROM ${ref("stg_lecangs_inventory_flow")} WHERE FALSE
 }
 
 -- serial_no bất biến → uniqueKey đảm bảo không trùng; bản ghi mới chỉ INSERT thêm.
@@ -15,10 +30,14 @@ SELECT
   warehouse_code,
   business_no,
   business_type,
+  business_type_label,          -- nhãn nghiệp vụ (2C_order / 2B_order / inbound / ...) — mart_lecangs_inventory_planning lọc theo cột này
   goods_code,
   lecangs_code,
+  en_name,                      -- product name — nguồn cho CTE `names` của mart_lecangs_inventory_planning
+  cn_name,
   qty_delta,
   update_time,
   _loaded_at
 FROM ${ref("stg_lecangs_inventory_flow")}
-${when(incremental(), `WHERE _loaded_at > (SELECT MAX(_loaded_at) FROM ${self()})`)}
+-- COALESCE bắt buộc: bảng rỗng ⇒ MAX() = NULL ⇒ `_loaded_at > NULL` lọc sạch mọi dòng (im lặng).
+${when(incremental(), `WHERE _loaded_at > (SELECT COALESCE(MAX(_loaded_at), TIMESTAMP('1970-01-01')) FROM ${self()})`)}

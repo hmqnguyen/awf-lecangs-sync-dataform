@@ -1,6 +1,10 @@
 config {
   type: "table",
   schema: dataform.projectConfig.vars.mart_dataset,
+  assertions: {
+    uniqueKey: ["cost_date", "warehouse_code"],
+    nonNull: ["cost_date", "warehouse_code"]
+  },
   description: "MART: tổng chi phí logistics theo NGÀY × KHO (Lecangs). So sánh chi phí cấp kho; khi union thêm mart kho khác (Castlegate/FBA/WFS) sẽ so chéo được toàn hệ thống.",
   tags: ["mart", "lecangs", "cost"],
   bigquery: { partitionBy: "cost_date", clusterBy: ["warehouse_code"] }

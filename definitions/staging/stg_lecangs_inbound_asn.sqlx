@@ -60,6 +60,7 @@ SELECT
   ${lecangs.ts("JSON_VALUE(raw_payload, '$.updateTime')")}       AS update_time,
   JSON_VALUE(raw_payload, '$.closeRemark')                      AS close_remark,
   ${lecangs.ts("JSON_VALUE(raw_payload, '$.eta')")}             AS eta,
-  DATE(${lecangs.ts("JSON_VALUE(raw_payload, '$.createTime')")}) AS create_date
+  DATE(${lecangs.ts("JSON_VALUE(raw_payload, '$.createTime')")}) AS create_date,
+  _ingested_at AS _loaded_at
 FROM latest
 WHERE rn = 1

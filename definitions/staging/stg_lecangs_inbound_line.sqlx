@@ -22,6 +22,7 @@ SELECT
   JSON_VALUE(det, '$.enName')                            AS en_name,
   SAFE_CAST(JSON_VALUE(det, '$.goodsNum') AS INT64)      AS expected_qty,
   SAFE_CAST(JSON_VALUE(det, '$.receivingNum') AS INT64)  AS received_qty,
-  det                                                    AS raw_line      -- an toàn: giữ nguyên phần tử
+  det                                                    AS raw_line      -- an toàn: giữ nguyên phần tử,
+  _ingested_at AS _loaded_at
 FROM picked,
      UNNEST(JSON_QUERY_ARRAY(raw_payload, '$.details')) AS det WITH OFFSET line_no

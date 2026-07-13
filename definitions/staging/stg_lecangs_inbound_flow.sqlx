@@ -27,6 +27,7 @@ SELECT
   SAFE_CAST(JSON_VALUE(flw, '$.billStatus') AS INT64)      AS bill_status,
   SAFE_CAST(JSON_VALUE(flw, '$.adjustAmount') AS NUMERIC)  AS adjust_amount,
   SAFE_CAST(JSON_VALUE(flw, '$.totalAmount') AS NUMERIC)   AS total_amount,   -- chi phí thực dòng này
-  flw                                                      AS raw_line
+  flw                                                      AS raw_line,
+  _ingested_at AS _loaded_at
 FROM picked,
      UNNEST(JSON_QUERY_ARRAY(raw_payload, '$.flows')) AS flw WITH OFFSET line_no

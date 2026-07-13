@@ -25,5 +25,6 @@ SELECT
   SAFE_CAST(JSON_VALUE(pkg, '$.height') AS NUMERIC)    AS height,
   SAFE_CAST(JSON_VALUE(pkg, '$.weight') AS NUMERIC)    AS weight,
   JSON_VALUE(pkg, '$.weightUnit')                      AS weight_unit,
-  JSON_VALUE(pkg, '$.lengthUnit')                      AS length_unit
+  JSON_VALUE(pkg, '$.lengthUnit')                      AS length_unit,
+  _ingested_at AS _loaded_at
 FROM picked, UNNEST(JSON_QUERY_ARRAY(raw_payload, '$.packageList')) AS pkg WITH OFFSET pkg_idx

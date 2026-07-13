@@ -1,6 +1,10 @@
 config {
   type: "incremental",
   schema: dataform.projectConfig.vars.fact_dataset,
+  assertions: {
+    uniqueKey: ["sku_cost_uid"],
+    nonNull: ["sku_cost_uid"]
+  },
   description: "Fact SKU logistics cost — phân bổ phí logistics về từng SKU. storage đã per-SKU (direct); fulfillment 2C (package), 2B (order), first-mile inbound (ASN) phân bổ theo TỶ LỆ QUANTITY của SKU trong parent. Chi phí không map được composition giữ nguyên goods_code NULL (allocation_basis='unmatched') để không mất tổng phí.",
   tags: ["fact", "lecangs", "cost_allocation"],
   uniqueKey: ["sku_cost_uid"],
@@ -37,19 +41,19 @@ direct AS (
 -- ===== composition theo quantity =====
 comp_2c AS (
   SELECT toc_order_no, package_no, goods_code, SUM(quantity) AS qty
-  FROM ${ref("stg_lecangs_outbound_2c_goods")} GROUP BY 1, 2, 3
+  FROM ${ref("master_lecangs_outbound_2c_goods")} GROUP BY 1, 2, 3
 ),
 comp_2c_tot AS (SELECT toc_order_no, package_no, SUM(qty) AS tot FROM comp_2c GROUP BY 1, 2),
 
 comp_2b AS (
   SELECT order_no, goods_code, SUM(actual_num) AS qty
-  FROM ${ref("stg_lecangs_outbound_2b_goods")} GROUP BY 1, 2
+  FROM ${ref("master_lecangs_outbound_2b_goods")} GROUP BY 1, 2
 ),
 comp_2b_tot AS (SELECT order_no, SUM(qty) AS tot FROM comp_2b GROUP BY 1),
 
 comp_in AS (
   SELECT asn_no, goods_code, SUM(received_qty) AS qty
-  FROM ${ref("stg_lecangs_inbound_line")} GROUP BY 1, 2
+  FROM ${ref("master_lecangs_inbound_line")} GROUP BY 1, 2
 ),
 comp_in_tot AS (SELECT asn_no, SUM(qty) AS tot FROM comp_in GROUP BY 1),
 

@@ -26,5 +26,6 @@ SELECT
   SAFE_CAST(JSON_VALUE(d, '$.weight') AS NUMERIC)      AS weight,
   JSON_VALUE(d, '$.weightUnit')                        AS weight_unit,
   JSON_VALUE(d, '$.lengthUnit')                        AS length_unit,
-  d                                                     AS raw_line
+  d                                                     AS raw_line,
+  _ingested_at AS _loaded_at
 FROM picked, UNNEST(JSON_QUERY_ARRAY(raw_payload, '$.omsTobOrderDragDetailList')) AS d WITH OFFSET line_no

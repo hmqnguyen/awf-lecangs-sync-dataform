@@ -1,0 +1,75 @@
+config {
+  type: "table",
+  schema: dataform.projectConfig.vars.mart_dataset,
+  assertions: {
+    uniqueKey: ["asn_no", "sku"],
+    nonNull: ["asn_no"]
+  },
+  description: "Chi phí first-mile (inbound) phân bổ xuống SKU trong từng LÔ NHẬP (ASN), cơ sở = THỂ TÍCH (CBM) — nhất quán với các mart chi phí khác. Phí first-mile per-ASN → chia cho SKU theo CBM share (received_qty × unit_cbm). Grain: asn_no × sku. Tách cột theo loại phí.",
+  tags: ["mart", "lecangs", "inbound_cost"],
+  bigquery: { clusterBy: ["asn_no", "sku"] }
+}
+
+WITH
+fm AS (
+  SELECT asn_no,
+    SUM(total_amount)                                                                       AS fm_total,
+    SUM(IF(cost_en_name LIKE '%Discount%'  OR cost_cn_name LIKE '%优惠%', total_amount, 0)) AS fm_discount,
+    SUM(IF(cost_en_name LIKE '%Unloading%' OR cost_cn_name LIKE '%卸柜%', total_amount, 0)) AS fm_unloading,
+    SUM(IF(cost_type LIKE '%COPL%' OR cost_cn_name LIKE '%整柜%' OR cost_cn_name LIKE '%托%', total_amount, 0)) AS fm_container,
+    SUM(IF(NOT (cost_en_name LIKE '%Discount%' OR cost_cn_name LIKE '%优惠%'
+             OR cost_en_name LIKE '%Unloading%' OR cost_cn_name LIKE '%卸柜%'
+             OR cost_type LIKE '%COPL%' OR cost_cn_name LIKE '%整柜%' OR cost_cn_name LIKE '%托%'), total_amount, 0)) AS fm_other,
+    ANY_VALUE(currency)                                                                     AS currency
+  FROM ${ref("master_lecangs_inbound_flow")} GROUP BY asn_no
+),
+lines AS (
+  SELECT asn_no, goods_code, ANY_VALUE(en_name) AS product_name,
+         SUM(received_qty) AS received_qty, SUM(expected_qty) AS expected_qty
+  FROM ${ref("master_lecangs_inbound_line")} GROUP BY asn_no, goods_code
+),
+-- CBM/đơn vị theo (ASN × SKU) từ inventory + rent_detail (business_no = asn_no)
+sku_cbm AS (
+  SELECT business_no AS asn_no, goods_code,
+         ANY_VALUE(SAFE_DIVIDE(volume, NULLIF(goods_num,0))) AS unit_cbm
+  FROM (
+    SELECT business_no, goods_code, volume, goods_num FROM ${ref("master_lecangs_inventory")} WHERE goods_num > 0
+    UNION ALL
+    SELECT business_no, goods_code, volume, goods_num FROM ${ref("master_lecangs_warehouse_rent_detail")} WHERE goods_num > 0
+  ) GROUP BY business_no, goods_code
+),
+enriched AS (
+  SELECT l.*, c.unit_cbm,
+         l.received_qty * c.unit_cbm AS received_cbm
+  FROM lines l LEFT JOIN sku_cbm c USING (asn_no, goods_code)
+),
+asn_cbm AS (
+  SELECT asn_no, SUM(received_cbm) AS asn_total_cbm FROM enriched GROUP BY asn_no
+),
+asn_hdr AS (
+  SELECT asn_no, ANY_VALUE(warehouse_code) AS warehouse_code,
+         ANY_VALUE(DATE(receiving_date)) AS receiving_date, ANY_VALUE(asn_kind) AS asn_kind
+  FROM ${ref("master_lecangs_inbound_asn")} GROUP BY asn_no
+)
+
+SELECT
+  e.asn_no, e.goods_code AS sku, e.product_name,
+  h.warehouse_code, h.receiving_date, h.asn_kind,
+  e.received_qty,
+  ROUND(e.unit_cbm, 5)                                      AS unit_cbm,
+  ROUND(e.received_cbm, 4)                                  AS received_cbm,
+  ROUND(a.asn_total_cbm, 4)                                 AS asn_total_cbm,
+  ROUND(SAFE_DIVIDE(e.received_cbm, a.asn_total_cbm), 4)    AS cbm_share,
+
+  ROUND(fm.fm_discount  * SAFE_DIVIDE(e.received_cbm, a.asn_total_cbm), 4) AS inbound_discount,
+  ROUND(fm.fm_unloading * SAFE_DIVIDE(e.received_cbm, a.asn_total_cbm), 4) AS inbound_unloading,
+  ROUND(fm.fm_container * SAFE_DIVIDE(e.received_cbm, a.asn_total_cbm), 4) AS inbound_container,
+  ROUND(fm.fm_other     * SAFE_DIVIDE(e.received_cbm, a.asn_total_cbm), 4) AS inbound_other,
+  ROUND(fm.fm_total     * SAFE_DIVIDE(e.received_cbm, a.asn_total_cbm), 4) AS first_mile_cost,
+  ROUND(SAFE_DIVIDE(fm.fm_total * SAFE_DIVIDE(e.received_cbm, a.asn_total_cbm), NULLIF(e.received_qty,0)), 4) AS first_mile_per_unit,
+  ROUND(SAFE_DIVIDE(fm.fm_total * SAFE_DIVIDE(e.received_cbm, a.asn_total_cbm), NULLIF(e.received_cbm,0)), 4) AS first_mile_per_cbm,
+  fm.currency
+FROM enriched e
+JOIN asn_cbm a USING (asn_no)
+JOIN fm       USING (asn_no)
+LEFT JOIN asn_hdr h USING (asn_no)

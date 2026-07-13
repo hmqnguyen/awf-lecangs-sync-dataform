@@ -1,10 +1,25 @@
 config {
   type: "incremental",
   schema: dataform.projectConfig.vars.master_dataset,
+  assertions: {
+    uniqueKey: ["snapshot_date", "warehouse_code", "goods_code", "business_no", "warehouse_date"],
+    nonNull: ["snapshot_date", "goods_code"]
+  },
   description: "Master inventory — giữ snapshot tồn kho theo TỪNG NGÀY. Cùng ngày: ghi đè (bản mới nhất). Khác ngày: giữ lại như version lịch sử.",
   tags: ["master", "lecangs"],
   uniqueKey: ["snapshot_date", "warehouse_code", "goods_code", "business_no", "warehouse_date"],
   bigquery: { partitionBy: "snapshot_date", clusterBy: ["goods_code"] }
+}
+
+-- First-run safety (Amazon-style): incremental() can compile ${self()} in the watermark
+-- subquery even when the target table does not exist yet (fresh env / prod first deploy).
+-- Pre-create an EMPTY table with correct schema + partition/cluster. AS SELECT ... WHERE FALSE
+-- avoids hand-listing columns (keeps SELECT * masters debt-free, lesson #8). No-op once the
+-- table exists (e.g. after --full-refresh).
+pre_operations {
+  CREATE TABLE IF NOT EXISTS ${self()}
+  PARTITION BY snapshot_date CLUSTER BY goods_code AS
+  SELECT brand, snapshot_date, warehouse_code, goods_code, business_no, lecangs_code, en_name, cn_name, goods_num, warehouse_date, inventory_age, wms_length, wms_width, wms_height, wms_weight, weight_unit, volume, measure_unit, measurement_unit, _loaded_at FROM ${ref("stg_lecangs_inventory")} WHERE FALSE
 }
 
 -- uniqueKey (snapshot_date, warehouse_code, goods_code) tự quyết định ghi đè/giữ:
@@ -27,4 +42,5 @@ SELECT
   measurement_unit,
   _loaded_at
 FROM ${ref("stg_lecangs_inventory")}
-${when(incremental(), `WHERE _loaded_at > (SELECT MAX(_loaded_at) FROM ${self()})`)}
+-- COALESCE bắt buộc: bảng rỗng ⇒ MAX() = NULL ⇒ `_loaded_at > NULL` lọc sạch mọi dòng (im lặng).
+${when(incremental(), `WHERE _loaded_at > (SELECT COALESCE(MAX(_loaded_at), TIMESTAMP('1970-01-01')) FROM ${self()})`)}

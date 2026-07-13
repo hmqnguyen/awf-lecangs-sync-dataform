@@ -5,7 +5,7 @@ defaultAssertionDataset: afw_lecangs_fact
 
 # Kiến trúc 4 lớp: Raw (C# ghi) → Staging → Master & Fact
 #   - C# AfwLecangsSync ghi raw_payload vào raw dataset; Dataform chỉ ĐỌC raw.
-#   - master_dataset RIÊNG (afw_lecangs_master) — tách khỏi fact.
+#   - master_dataset = fact_dataset (master nằm chung dataset fact, như Amazon).
 # Location phải khớp BigQuery dataset location (US multi-region).
 
 vars:

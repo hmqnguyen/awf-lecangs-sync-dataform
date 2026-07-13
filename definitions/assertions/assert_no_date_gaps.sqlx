@@ -1,0 +1,48 @@
+config {
+  type: "assertion",
+  schema: dataform.projectConfig.vars.staging_dataset,
+  name: "assert_no_date_gaps",
+  description: "PHÁT HIỆN LỖ HỔNG NGÀY ở STAGING cho bảng theo-ngày LIÊN TỤC (snapshot tồn kho, billing thuê kho). Job sync 'lỗi 1 ngày không giết cả job' có thể nuốt lỗi và bỏ ngày âm thầm → mart tính sai trên data thủng. FAIL nếu có ngày thiếu giữa min..max. Rỗng = pass.",
+  tags: ["assertion", "lecangs", "data_quality"]
+}
+
+/*
+  CHỈ áp cho bảng có ngày LIÊN TỤC:
+    stg_lecangs_inventory              → snapshot_date (snapshot tồn kho hằng ngày)
+    stg_lecangs_warehouse_rent_summary → billing_date  (phí lưu kho tính theo NGÀY)
+  KHÔNG áp cho order/2b/2c/inbound/inventory_flow — dữ liệu theo SỰ KIỆN, ngày không
+  phát sinh giao dịch là bình thường, không phải lỗi.
+
+  Ranh giới lấy TỪ CHÍNH BẢNG (min..max) → chỉ bắt LỖ Ở GIỮA. Dạng "job chết, bảng
+  đứng yên" do assert_data_freshness đảm nhiệm (neo vào CURRENT_DATE).
+*/
+
+WITH bounds AS (
+  SELECT 'stg_lecangs_inventory' AS table_name,
+         MIN(DATE(snapshot_date)) AS min_d, MAX(DATE(snapshot_date)) AS max_d
+  FROM ${ref("stg_lecangs_inventory")}
+  UNION ALL
+  SELECT 'stg_lecangs_warehouse_rent_summary',
+         MIN(DATE(billing_date)), MAX(DATE(billing_date))
+  FROM ${ref("stg_lecangs_warehouse_rent_summary")}
+),
+
+actual AS (
+  SELECT 'stg_lecangs_inventory' AS table_name, DATE(snapshot_date) AS d
+  FROM ${ref("stg_lecangs_inventory")} GROUP BY 1, 2
+  UNION ALL
+  SELECT 'stg_lecangs_warehouse_rent_summary', DATE(billing_date)
+  FROM ${ref("stg_lecangs_warehouse_rent_summary")} GROUP BY 1, 2
+),
+
+expected AS (
+  SELECT b.table_name, d
+  FROM bounds b, UNNEST(GENERATE_DATE_ARRAY(b.min_d, b.max_d)) AS d
+  WHERE b.min_d IS NOT NULL
+)
+
+SELECT e.table_name, e.d AS missing_date
+FROM expected e
+LEFT JOIN actual a ON a.table_name = e.table_name AND a.d = e.d
+WHERE a.d IS NULL
+ORDER BY e.table_name, e.d

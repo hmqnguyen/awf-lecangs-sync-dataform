@@ -1,0 +1,15 @@
+config {
+  type: "incremental",
+  schema: dataform.projectConfig.vars.master_dataset,
+  assertions: {
+    uniqueKey: ["billing_no", "sheet_name", "row_index"],
+    nonNull: ["billing_no"]
+  },
+  description: "Master bill detail (CON độc lập) — latest-state theo billing_no, sheet_name, row_index (dòng chi tiết bất biến). Incremental theo _loaded_at.",
+  tags: ["master", "lecangs", "bill"],
+  uniqueKey: ["billing_no", "sheet_name", "row_index"],
+  bigquery: { clusterBy: ["billing_no"] }
+}
+
+SELECT * FROM ${ref("stg_lecangs_bill_detail")}
+${when(incremental(), `WHERE _loaded_at > (SELECT COALESCE(MAX(_loaded_at), TIMESTAMP('1970-01-01')) FROM ${self()})`)}

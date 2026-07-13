@@ -1,0 +1,137 @@
+config {
+  type: "table",
+  schema: dataform.projectConfig.vars.mart_dataset,
+  assertions: {
+    uniqueKey: ["warehouse_code", "sku"],
+    nonNull: ["warehouse_code", "sku"]
+  },
+  description: "Inventory planning Lecangs (mẫu Amazon FBA). Tồn + age buckets + velocity + STOCK COVERAGE + CẢNH BÁO HẾT HÀNG (theo lead time NM5) + health + storage cost + Castlegate. Grain: snapshot mới nhất × warehouse × SKU.",
+  tags: ["mart", "lecangs", "inventory_planning", "castlegate"],
+  bigquery: { partitionBy: "snapshot_date", clusterBy: ["warehouse_code", "sku"] }  -- output đặt tên `sku` (o.goods_code AS sku); đồng bộ với mart_lecangs_inventory_aging / _inbound_cost_by_sku
+}
+
+-- Hằng số quy hoạch (nội thất về từ NM5 VN: sản xuất + ocean freight)
+-- lead_time = 45 ngày · target coverage = 30 ngày · excess > 60 · critical < 7
+WITH
+onhand AS (
+  SELECT
+    ANY_VALUE(brand) AS brand, warehouse_code, goods_code,
+    ANY_VALUE(lecangs_code) AS lecangs_code, MAX(snapshot_date) AS snapshot_date,
+    SUM(goods_num) AS available,
+    ROUND(SUM(volume),4) AS storage_volume,
+    ROUND(ANY_VALUE(SAFE_DIVIDE(volume,NULLIF(goods_num,0))),5) AS item_volume,
+    ANY_VALUE(measurement_unit) AS volume_unit,
+    SUM(IF(inventory_age BETWEEN 0   AND 30,  goods_num,0)) AS inv_age_0_30,
+    SUM(IF(inventory_age BETWEEN 31  AND 60,  goods_num,0)) AS inv_age_31_60,
+    SUM(IF(inventory_age BETWEEN 61  AND 90,  goods_num,0)) AS inv_age_61_90,
+    SUM(IF(inventory_age BETWEEN 91  AND 180, goods_num,0)) AS inv_age_91_180,
+    SUM(IF(inventory_age BETWEEN 181 AND 270, goods_num,0)) AS inv_age_181_270,
+    SUM(IF(inventory_age BETWEEN 271 AND 365, goods_num,0)) AS inv_age_271_365,
+    SUM(IF(inventory_age > 365,               goods_num,0)) AS inv_age_366_plus,
+    SUM(IF(inventory_age < 90,  goods_num,0)) AS units_free_at_castlegate,
+    SUM(IF(inventory_age >= 90, goods_num,0)) AS units_billable_at_castlegate,
+    MAX(inventory_age) AS oldest_age_days
+  FROM ${ref("master_lecangs_inventory")}
+  WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM ${ref("master_lecangs_inventory")})
+  GROUP BY warehouse_code, goods_code
+),
+names AS (
+  SELECT goods_code, ANY_VALUE(en_name) AS product_name
+  FROM ${ref("master_lecangs_inventory_flow")} WHERE en_name IS NOT NULL GROUP BY goods_code
+),
+ship AS (
+  SELECT warehouse_code, goods_code,
+    SUM(IF(DATE(update_time) >= DATE_SUB(CURRENT_DATE(), INTERVAL 7  DAY), -qty_delta,0)) AS units_shipped_t7,
+    SUM(IF(DATE(update_time) >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY), -qty_delta,0)) AS units_shipped_t30,
+    SUM(IF(DATE(update_time) >= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY), -qty_delta,0)) AS units_shipped_t60,
+    SUM(IF(DATE(update_time) >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY), -qty_delta,0)) AS units_shipped_t90
+  FROM ${ref("master_lecangs_inventory_flow")}
+  WHERE qty_delta < 0 AND business_type_label IN ('2C_order','2B_order')
+  GROUP BY warehouse_code, goods_code
+),
+storage AS (
+  SELECT warehouse_code, goods_code, ROUND(SUM(expense),4) AS storage_cost_t30, ANY_VALUE(currency) AS currency
+  FROM ${ref("master_lecangs_warehouse_rent_detail")}
+  WHERE billing_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+  GROUP BY warehouse_code, goods_code
+),
+-- VELOCITY + COVERAGE (tính 1 lần, dùng lại)
+vel AS (
+  SELECT o.warehouse_code, o.goods_code,
+    o.available,
+    COALESCE(s.units_shipped_t30,0) AS u30,
+    COALESCE(s.units_shipped_t90,0) AS u90,
+    -- run-rate: ưu tiên 30d, nếu 0 thì dùng 90d (mượt hơn cho hàng bán chậm)
+    COALESCE(NULLIF(COALESCE(s.units_shipped_t30,0)/30.0,0), COALESCE(s.units_shipped_t90,0)/90.0) AS daily_rate
+  FROM onhand o LEFT JOIN ship s USING (warehouse_code, goods_code)
+)
+
+SELECT
+  o.brand, o.snapshot_date, o.warehouse_code,
+  o.goods_code AS sku, o.lecangs_code, n.product_name,
+  o.available, o.storage_volume, o.item_volume, o.volume_unit,
+
+  o.inv_age_0_30, o.inv_age_31_60, o.inv_age_61_90, o.inv_age_91_180,
+  o.inv_age_181_270, o.inv_age_271_365, o.inv_age_366_plus, o.oldest_age_days,
+
+  COALESCE(sh.units_shipped_t7,0)  AS units_shipped_t7,
+  COALESCE(sh.units_shipped_t30,0) AS units_shipped_t30,
+  COALESCE(sh.units_shipped_t60,0) AS units_shipped_t60,
+  COALESCE(sh.units_shipped_t90,0) AS units_shipped_t90,
+  ROUND(v.daily_rate,3)            AS avg_daily_units,
+
+  -- ===== STOCK COVERAGE =====
+  ROUND(SAFE_DIVIDE(o.available, NULLIF(v.daily_rate,0)),1)          AS days_of_supply,       -- coverage (ngày)
+  ROUND(SAFE_DIVIDE(o.available, NULLIF(v.daily_rate,0))/7,1)        AS weeks_of_cover,
+  CAST(FLOOR(SAFE_DIVIDE(o.available, NULLIF(v.daily_rate,0))) AS INT64) AS days_to_stockout,
+  DATE_ADD(o.snapshot_date, INTERVAL CAST(LEAST(SAFE_DIVIDE(o.available, NULLIF(v.daily_rate,0)),3650) AS INT64) DAY) AS projected_stockout_date,
+  45                                                                 AS lead_time_days,        -- NM5 sx + ocean freight
+  30                                                                 AS target_coverage_days,
+  ROUND(SAFE_DIVIDE(COALESCE(sh.units_shipped_t90,0), o.available + COALESCE(sh.units_shipped_t90,0)),3) AS sell_through_t90,
+
+  -- ===== CẢNH BÁO HẾT HÀNG =====
+  (o.available = 0 AND v.daily_rate > 0)                            AS is_stockout,           -- đã hết mà vẫn có cầu
+  -- đặt hàng nếu coverage < lead time (sẽ đứt trước khi hàng NM5 về)
+  (o.available > 0 AND v.daily_rate > 0
+    AND SAFE_DIVIDE(o.available, v.daily_rate) < 45)                AS reorder_recommended,
+  GREATEST(CAST(CEIL(v.daily_rate * (45 + 30)) AS INT64) - o.available, 0) AS suggested_reorder_qty, -- phủ lead+target
+  CASE
+    WHEN o.available = 0 AND v.daily_rate > 0                                   THEN 'Out of stock'
+    WHEN v.daily_rate = 0                                                       THEN 'No demand'
+    WHEN SAFE_DIVIDE(o.available, v.daily_rate) < 7                             THEN 'Critical (<7d)'
+    WHEN SAFE_DIVIDE(o.available, v.daily_rate) < 14                            THEN 'Low (<14d)'
+    WHEN SAFE_DIVIDE(o.available, v.daily_rate) < 45                            THEN 'Below lead-time'
+    WHEN SAFE_DIVIDE(o.available, v.daily_rate) > 60                            THEN 'Excess'
+    ELSE 'Adequate'
+  END                                                               AS coverage_status,
+
+  -- storage cost
+  COALESCE(st.storage_cost_t30,0) AS storage_cost_t30,
+  COALESCE(st.currency,'USD')     AS currency,
+
+  -- health & action (gộp cả stockout + excess)
+  GREATEST(o.available - CAST(CEIL(v.daily_rate * 60) AS INT64), 0) AS estimated_excess_quantity,
+  CASE
+    WHEN o.available = 0 AND v.daily_rate > 0                                   THEN 'Out of stock'
+    WHEN v.daily_rate = 0 AND o.available > 0                                   THEN 'No-sale (aged)'
+    WHEN SAFE_DIVIDE(o.available, v.daily_rate) < 45                            THEN 'Low'
+    WHEN SAFE_DIVIDE(o.available, v.daily_rate) > 60                            THEN 'Excess'
+    ELSE 'Healthy'
+  END                                                               AS health_status,
+  CASE
+    WHEN o.available = 0 AND v.daily_rate > 0                                   THEN 'HẾT HÀNG — đặt NM5 gấp (đang mất doanh số)'
+    WHEN v.daily_rate = 0 AND o.available > 0                                   THEN 'Xả hàng / xem xét disposal (tồn không bán)'
+    WHEN SAFE_DIVIDE(o.available, v.daily_rate) < 7                             THEN 'Đặt hàng KHẨN — sắp đứt trong 1 tuần'
+    WHEN SAFE_DIVIDE(o.available, v.daily_rate) < 45                            THEN 'Đặt bổ sung (coverage < lead time NM5)'
+    WHEN SAFE_DIVIDE(o.available, v.daily_rate) > 60                            THEN 'Giảm nhập / đẩy bán (tồn dư)'
+    ELSE 'Không cần hành động'
+  END                                                               AS recommended_action,
+
+  -- Castlegate
+  o.units_free_at_castlegate, o.units_billable_at_castlegate,
+  ROUND(SAFE_DIVIDE(o.units_billable_at_castlegate, NULLIF(o.available,0)),3) AS pct_billable_at_castlegate
+FROM onhand o
+JOIN vel v            USING (warehouse_code, goods_code)
+LEFT JOIN names   n   USING (goods_code)
+LEFT JOIN ship    sh  USING (warehouse_code, goods_code)
+LEFT JOIN storage st  USING (warehouse_code, goods_code)

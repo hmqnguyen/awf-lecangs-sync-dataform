@@ -21,7 +21,8 @@ SELECT
   JSON_VALUE(g, '$.goodsCode')                         AS goods_code,
   SAFE_CAST(JSON_VALUE(g, '$.quantity') AS INT64)      AS quantity,
   JSON_QUERY(g, '$.itemBatchCodeList')                AS item_batch_code_list,
-  g                                                     AS raw_line
+  g                                                     AS raw_line,
+  _ingested_at AS _loaded_at
 FROM picked,
      UNNEST(JSON_QUERY_ARRAY(raw_payload, '$.packageList')) AS pkg,
      UNNEST(JSON_QUERY_ARRAY(pkg, '$.goodsList')) AS g WITH OFFSET line_no
