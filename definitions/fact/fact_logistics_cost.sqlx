@@ -28,7 +28,8 @@ WITH exp_2c AS (
     ex.expense_code,
     ex.expense_en_name               AS expense_en,
     ex.expense                       AS amount,
-    ex.currency
+    ex.currency,
+    CAST(ex.line_no AS STRING)       AS line_key       -- I5: expense trùng (toc,package,expense_code) khác line_no → phải vào cost_uid
   FROM ${ref("master_lecangs_outbound_2c_expense")} AS ex
   JOIN ${ref("master_lecangs_outbound_2c_order")} AS o USING (toc_order_no)
 ),
@@ -45,7 +46,8 @@ exp_2b AS (
     ex.cost_type                     AS expense_code,
     ex.cost_type_cn_name             AS expense_en,
     ex.expense                       AS amount,
-    ex.currency
+    ex.currency,
+    CAST(ex.line_no AS STRING)       AS line_key
   FROM ${ref("master_lecangs_outbound_2b_expense")} AS ex
   JOIN ${ref("master_lecangs_outbound_2b_order")} AS o USING (order_no)
 ),
@@ -62,7 +64,8 @@ storage AS (
     'STORAGE'                                         AS expense_code,
     'Daily storage rent'                              AS expense_en,
     expense                                           AS amount,
-    CAST(NULL AS STRING)                              AS currency
+    CAST(NULL AS STRING)                              AS currency,
+    CAST(detail_id AS STRING)                         AS line_key       -- rent_detail: 1 dòng/detail_id
   FROM ${ref("master_lecangs_warehouse_rent_detail")}
 ),
 inbound AS (
@@ -78,7 +81,8 @@ inbound AS (
     f.cost_type                                       AS expense_code,   -- vd C_COPL, First Mile Discount, C_UnloadingSurcharge
     f.cost_en_name                                    AS expense_en,
     f.total_amount                                    AS amount,
-    f.currency
+    f.currency,
+    CAST(f.line_no AS STRING)                         AS line_key       -- inbound_flow: khóa (asn_no,line_no)
   FROM ${ref("master_lecangs_inbound_flow")} AS f
   JOIN ${ref("master_lecangs_inbound_asn")} AS a USING (asn_no)
 ),
@@ -90,7 +94,8 @@ unioned AS (
 )
 SELECT
   TO_HEX(MD5(CONCAT(source, '|', IFNULL(ref_no, ''), '|', IFNULL(package_no, ''), '|',
-                    IFNULL(expense_code, ''), '|', IFNULL(goods_code, ''), '|', CAST(cost_date AS STRING)))) AS cost_uid,
-  *
+                    IFNULL(expense_code, ''), '|', IFNULL(goods_code, ''), '|', CAST(cost_date AS STRING),
+                    '|', IFNULL(line_key, '')))) AS cost_uid,
+  * EXCEPT(line_key)
 FROM unioned
 ${when(incremental(), `WHERE cost_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 45 DAY)`)}

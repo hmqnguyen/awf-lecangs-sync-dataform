@@ -2,8 +2,8 @@ config {
   type: "table",
   schema: dataform.projectConfig.vars.fact_dataset,
   assertions: {
-    uniqueKey: ["out_business_no", "business_no", "lecangs_code"],
-    nonNull: ["out_business_no", "business_no"]
+    uniqueKey: ["order_cost_uid"],
+    nonNull: ["order_cost_uid", "out_business_no"]
   },
   description: "Phân bổ chi phí logistics vào ĐƠN ĐÃ XUẤT, cơ sở = THỂ TÍCH (CBM). STORAGE (warehouse_rent) theo cbm-days (cbm×holding); INBOUND/first-mile (ASN flows) theo cbm share. Grain: đơn × lô nhập × SKU. Phần còn tồn ở mẫu số → chỉ gánh phần đã xuất.",
   tags: ["fact", "lecangs", "logistics_alloc", "castlegate"],
@@ -12,7 +12,7 @@ config {
 
 WITH
 batch_storage AS (
-  SELECT business_no, lecangs_code, SUM(expense) AS storage_pool, ANY_VALUE(currency) AS currency
+  SELECT business_no, lecangs_code, SUM(expense) AS storage_pool, 'USD' AS currency  -- rent_detail có no currency col; Lecangs bill 100% USD (rent_summary verified)
   FROM ${ref("master_lecangs_warehouse_rent_detail")}
   WHERE business_no IS NOT NULL GROUP BY business_no, lecangs_code
 ),
@@ -42,14 +42,16 @@ sku_cbm AS (
   ) GROUP BY business_no, lecangs_code
 ),
 consumption AS (
-  SELECT fb.out_business_no, fb.business_no, fb.lecangs_code,
+  SELECT fb.flow_id, fb.flow_batch_id,
+         fb.out_business_no, fb.business_no, fb.lecangs_code,
          ABS(fb.qty_delta) AS qty_out,
          ABS(fb.qty_delta) * cbm.unit_cbm AS out_cbm,
          DATE(fb.create_time) AS ship_date, ib.inbound_date,
          GREATEST(DATE_DIFF(DATE(fb.create_time), ib.inbound_date, DAY), 0) AS holding_days
   FROM ${ref("master_lecangs_inventory_flow_batch")} fb
   LEFT JOIN inbound ib ON ib.business_no = fb.business_no
-  LEFT JOIN sku_cbm cbm USING (business_no, lecangs_code)
+  -- USING(business_no) sẽ nhập nhằng vì ib cũng có business_no (ON-join giữ cả 2) → dùng ON tường minh với fb
+  LEFT JOIN sku_cbm cbm ON cbm.business_no = fb.business_no AND cbm.lecangs_code = fb.lecangs_code
   WHERE fb.qty_delta < 0 AND fb.out_business_no IS NOT NULL
 ),
 -- mẫu số STORAGE: cbm-days (đã xuất + còn tồn) theo (lô × SKU)
@@ -73,6 +75,7 @@ asn_volume AS (
 )
 
 SELECT
+  TO_HEX(MD5(CONCAT(CAST(c.flow_id AS STRING),'|',CAST(c.flow_batch_id AS STRING),'|',IFNULL(c.business_no,'')))) AS order_cost_uid,  -- grain: 1 dòng/lần rút FIFO (flow_id,flow_batch_id,business_no) — nhiều lần rút cùng đơn×lô×SKU
   c.out_business_no, c.business_no, c.lecangs_code, c.ship_date, c.inbound_date,
   c.holding_days, c.qty_out, ROUND(c.out_cbm, 5) AS out_cbm,
 

@@ -50,7 +50,7 @@ ship AS (
   GROUP BY warehouse_code, goods_code
 ),
 storage AS (
-  SELECT warehouse_code, goods_code, ROUND(SUM(expense),4) AS storage_cost_t30, ANY_VALUE(currency) AS currency
+  SELECT warehouse_code, goods_code, ROUND(SUM(expense),4) AS storage_cost_t30, 'USD' AS currency  -- rent_detail có no currency col; Lecangs bill 100% USD
   FROM ${ref("master_lecangs_warehouse_rent_detail")}
   WHERE billing_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
   GROUP BY warehouse_code, goods_code
