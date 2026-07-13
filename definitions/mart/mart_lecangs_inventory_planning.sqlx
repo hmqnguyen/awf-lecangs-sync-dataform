@@ -7,7 +7,7 @@ config {
   },
   description: "Inventory planning Lecangs (mẫu Amazon FBA). Tồn + age buckets + velocity + STOCK COVERAGE + CẢNH BÁO HẾT HÀNG (theo lead time NM5) + health + storage cost + Castlegate. Grain: snapshot mới nhất × warehouse × SKU.",
   tags: ["mart", "lecangs", "inventory_planning", "castlegate"],
-  bigquery: { partitionBy: "snapshot_date", clusterBy: ["warehouse_code", "sku"] }  -- output đặt tên `sku` (o.goods_code AS sku); đồng bộ với mart_lecangs_inventory_aging / _inbound_cost_by_sku
+  bigquery: { partitionBy: "snapshot_date", clusterBy: ["warehouse_code", "sku"] }  // output đặt tên `sku` (o.goods_code AS sku); đồng bộ với mart_lecangs_inventory_aging / _inbound_cost_by_sku
 }
 
 -- Hằng số quy hoạch (nội thất về từ NM5 VN: sản xuất + ocean freight)
