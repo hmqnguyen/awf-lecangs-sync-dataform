@@ -2,33 +2,27 @@ config {
   type: "assertion",
   schema: dataform.projectConfig.vars.master_dataset,
   name: "assert_no_date_gaps_master",
-  description: "PHÁT HIỆN LỖ HỔNG NGÀY ở tầng MASTER (assert_no_date_gaps chỉ đọc STAGING). Master là nơi fact/mart THẬT SỰ đọc — nếu bước MERGE/incremental làm hụt ngày ở GIỮA mà staging vẫn đủ, assertion staging KHÔNG bắt được. FAIL nếu thiếu ngày. Rỗng = pass.",
+  description: "PHÁT HIỆN LỖ HỔNG NGÀY ở tầng MASTER cho chuỗi ngày LIÊN TỤC THẬT (billing thuê kho). Master là nơi fact/mart THẬT SỰ đọc. FAIL nếu thiếu ngày. Rỗng = pass.",
   tags: ["assertion", "lecangs", "data_quality", "master"]
 }
 
 /*
-  CHỈ áp cho master snapshot/daily LIÊN TỤC:
-    master_lecangs_inventory              → snapshot_date
-    master_lecangs_warehouse_rent_summary → billing_date
-  Dùng TOÀN BỘ lịch sử (mọi snapshot_date/billing_date), mục tiêu: mọi ngày giữa
-  min..max đều phải có dữ liệu.
+  CHỈ áp cho chuỗi LIÊN TỤC THẬT:
+    master_lecangs_warehouse_rent_summary → billing_date.
+
+  ⚠️ KHÔNG áp cho SNAPSHOT (master_lecangs_inventory.snapshot_date): ảnh chụp điểm-thời-gian,
+    ngày job không chạy thì không có snapshot & không backfill được ⇒ "thiếu ngày giữa" là downtime
+    lịch chạy, không phải lỗi data. Độ tươi do assert_data_freshness canh. (Amazon A-01/A-07 cùng lớp.)
 */
 
 WITH bounds AS (
-  SELECT 'master_lecangs_inventory' AS table_name,
-         MIN(DATE(snapshot_date)) AS min_d, MAX(DATE(snapshot_date)) AS max_d
-  FROM ${ref("master_lecangs_inventory")}
-  UNION ALL
-  SELECT 'master_lecangs_warehouse_rent_summary',
-         MIN(DATE(billing_date)), MAX(DATE(billing_date))
+  SELECT 'master_lecangs_warehouse_rent_summary' AS table_name,
+         MIN(DATE(billing_date)) AS min_d, MAX(DATE(billing_date)) AS max_d
   FROM ${ref("master_lecangs_warehouse_rent_summary")}
 ),
 
 actual AS (
-  SELECT 'master_lecangs_inventory' AS table_name, DATE(snapshot_date) AS d
-  FROM ${ref("master_lecangs_inventory")} GROUP BY 1, 2
-  UNION ALL
-  SELECT 'master_lecangs_warehouse_rent_summary', DATE(billing_date)
+  SELECT 'master_lecangs_warehouse_rent_summary' AS table_name, DATE(billing_date) AS d
   FROM ${ref("master_lecangs_warehouse_rent_summary")} GROUP BY 1, 2
 ),
 
