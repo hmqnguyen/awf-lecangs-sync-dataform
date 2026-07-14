@@ -37,7 +37,7 @@ onhand AS (
 ),
 names AS (
   SELECT goods_code, ANY_VALUE(en_name) AS product_name
-  FROM ${ref("master_lecangs_inventory_flow")} WHERE en_name IS NOT NULL GROUP BY goods_code
+  FROM ${ref("master_lecangs_inventory_flow")} WHERE NULLIF(TRIM(en_name), '') IS NOT NULL GROUP BY goods_code   -- I7: '' không phải NULL
 ),
 ship AS (
   SELECT warehouse_code, goods_code,

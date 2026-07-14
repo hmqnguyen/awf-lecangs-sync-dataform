@@ -1,0 +1,37 @@
+config {
+  type: "assertion",
+  schema: dataform.projectConfig.vars.fact_dataset,
+  name: "assert_cost_conservation",
+  description: "Business-rule guard (kiểu Amazon settlement guard): phân bổ chi phí về SKU PHẢI BẢO TOÀN tổng. SUM(fact_sku_logistics_cost.allocated_amount) = SUM(fact_logistics_cost.amount) theo cost_type. FAIL nếu lệch > tolerance ⇒ rò rỉ / đếm đôi trong Cost Allocation. Rỗng = pass.",
+  tags: ["assertion", "lecangs", "data_quality", "cost"]
+}
+
+/*
+  VÌ SAO CẦN: uniqueKey/nonNull chỉ canh KHÓA, không canh NGHIỆP VỤ. Allocation (direct +
+  quantity + unmatched) phải cộng lại đúng bằng chi phí gốc — nếu 1 nhánh join sai / lọc lệch,
+  tiền có thể mất hoặc bị đếm đôi mà khóa vẫn unique. Assertion này chốt đẳng thức tổng.
+
+  Tolerance 0.50 USD: đệm cho sai số làm tròn NUMERIC khi chia phần trăm across ~131k dòng.
+  Nếu diff > 0.50 ⇒ lỗi logic thật, không phải làm tròn.
+*/
+
+WITH src AS (
+  SELECT cost_type, ROUND(SUM(amount), 2) AS source_total
+  FROM ${ref("fact_logistics_cost")}
+  GROUP BY cost_type
+),
+alloc AS (
+  SELECT cost_type, ROUND(SUM(allocated_amount), 2) AS allocated_total
+  FROM ${ref("fact_sku_logistics_cost")}
+  GROUP BY cost_type
+)
+
+SELECT
+  COALESCE(s.cost_type, a.cost_type)                             AS cost_type,
+  s.source_total,
+  a.allocated_total,
+  ROUND(COALESCE(s.source_total, 0) - COALESCE(a.allocated_total, 0), 2) AS diff
+FROM src s
+FULL OUTER JOIN alloc a USING (cost_type)
+WHERE ABS(COALESCE(s.source_total, 0) - COALESCE(a.allocated_total, 0)) > 0.50
+ORDER BY ABS(COALESCE(s.source_total, 0) - COALESCE(a.allocated_total, 0)) DESC

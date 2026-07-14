@@ -20,7 +20,7 @@ rent AS (
          COUNT(DISTINCT billing_date) AS billed_days,
          'USD'                   AS currency  -- rent_detail có no currency col; Lecangs bill 100% USD
   FROM ${ref("master_lecangs_warehouse_rent_detail")}
-  WHERE business_no IS NOT NULL
+  WHERE NULLIF(TRIM(business_no), '') IS NOT NULL   -- I7: '' không phải NULL
   GROUP BY business_no, lecangs_code
 ),
 inv AS (

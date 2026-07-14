@@ -35,7 +35,7 @@ direct AS (
     'direct'                                 AS allocation_basis,
     currency
   FROM cost
-  WHERE goods_code IS NOT NULL
+  WHERE NULLIF(TRIM(goods_code), '') IS NOT NULL   -- I7: '' không phải NULL
 ),
 
 -- ===== composition theo quantity =====
@@ -71,7 +71,7 @@ alloc_2c AS (
   FROM cost c
   JOIN comp_2c     g ON c.ref_no = g.toc_order_no AND c.package_no = g.package_no
   JOIN comp_2c_tot t ON c.ref_no = t.toc_order_no AND c.package_no = t.package_no
-  WHERE c.source = '2C' AND c.goods_code IS NULL AND t.tot > 0
+  WHERE c.source = '2C' AND NULLIF(TRIM(c.goods_code), '') IS NULL AND t.tot > 0
 ),
 
 -- (3) fulfillment 2B → phân bổ theo qty trong order
@@ -88,7 +88,7 @@ alloc_2b AS (
   FROM cost c
   JOIN comp_2b     g ON c.ref_no = g.order_no
   JOIN comp_2b_tot t ON c.ref_no = t.order_no
-  WHERE c.source = '2B' AND c.goods_code IS NULL AND t.tot > 0
+  WHERE c.source = '2B' AND NULLIF(TRIM(c.goods_code), '') IS NULL AND t.tot > 0
 ),
 
 -- (4) first-mile inbound → phân bổ theo received_qty trong ASN
@@ -105,7 +105,7 @@ alloc_in AS (
   FROM cost c
   JOIN comp_in     g ON c.ref_no = g.asn_no
   JOIN comp_in_tot t ON c.ref_no = t.asn_no
-  WHERE c.source = 'INBOUND' AND c.goods_code IS NULL AND t.tot > 0
+  WHERE c.source = 'INBOUND' AND NULLIF(TRIM(c.goods_code), '') IS NULL AND t.tot > 0
 ),
 
 allocated AS (
@@ -126,7 +126,7 @@ unmatched AS (
     'unmatched'                              AS allocation_basis,
     currency
   FROM cost
-  WHERE goods_code IS NULL
+  WHERE NULLIF(TRIM(goods_code), '') IS NULL   -- I7: '' không phải NULL
     AND cost_uid NOT IN (SELECT cost_uid FROM allocated)
 ),
 

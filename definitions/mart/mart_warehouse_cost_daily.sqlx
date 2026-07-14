@@ -18,7 +18,7 @@ SELECT
   SUM(IF(cost_type = 'storage',     allocated_amount, 0))             AS storage_cost,
   SUM(IF(cost_type = 'inbound',     allocated_amount, 0))             AS inbound_cost,
   SUM(allocated_amount)                                              AS total_logistics_cost,
-  COUNT(DISTINCT IF(goods_code IS NOT NULL, goods_code, NULL))        AS sku_count,
+  COUNT(DISTINCT NULLIF(TRIM(goods_code), ''))                       AS sku_count,   -- I7: '' không phải NULL
   COUNT(DISTINCT ref_no)                                              AS ref_count,
   ANY_VALUE(currency)                                                AS currency
 FROM ${ref("fact_sku_logistics_cost")}
