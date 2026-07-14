@@ -14,3 +14,5 @@ vars:
   fact_dataset:    afw_lecangs_fact
   master_dataset:  afw_lecangs_master
   mart_dataset:    afw_lecangs_mart
+  # Bật assert_data_freshness (prod=sync live). Dev backfill tĩnh override "false" trong environments/dev.json.
+  enforce_freshness: "true"

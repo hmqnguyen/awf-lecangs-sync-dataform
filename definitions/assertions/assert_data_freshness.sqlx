@@ -3,7 +3,10 @@ config {
   schema: dataform.projectConfig.vars.staging_dataset,
   name: "assert_data_freshness",
   description: "CỜ ĐỎ: bảng theo-ngày ĐỨNG YÊN quá lâu ⇒ JOB SYNC ĐÃ CHẾT. assert_no_date_gaps MÙ với ca này (nó lấy MAX từ chính bảng → job chết thì MAX lùi theo → 'không có lỗ hổng'). Assertion này neo vào CURRENT_DATE(). FAIL nếu MAX(date) trễ hơn ngưỡng. Rỗng = pass.",
-  tags: ["assertion", "lecangs", "data_quality", "freshness"]
+  tags: ["assertion", "lecangs", "data_quality", "freshness"],
+  // Freshness ĐỎ VĨNH VIỄN trên dev backfill tĩnh (data không cập nhật). Bật ở prod (sync live);
+  // tắt ở dev qua var enforce_freshness="false" (environments/dev.json) hoặc --vars enforce_freshness=false.
+  disabled: dataform.projectConfig.vars.enforce_freshness !== "true"
 }
 
 /*

@@ -8,6 +8,7 @@
     "staging_dataset": "afw_lecangs_staging",
     "fact_dataset":    "afw_lecangs_fact",
     "master_dataset":  "afw_lecangs_master",
-    "mart_dataset":    "afw_lecangs_mart"
+    "mart_dataset":    "afw_lecangs_mart",
+    "enforce_freshness": "false"
   }
 }
