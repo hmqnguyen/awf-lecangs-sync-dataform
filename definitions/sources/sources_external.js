@@ -14,6 +14,9 @@ const externalSources = [
   // Walmart (WFS)
   ["afw_walmart_master", "master_walmart_inventory"],
   ["afw_walmart_master", "master_walmart_order_lines"],
+  // Etsy / Home Depot (sales)
+  ["afw_etsy_master",       "master_etsy_order_line"],
+  ["afw_homedepot_master",  "master_homedepot_order_lines"],
   // Airtable crosswalk / product master
   ["afw_airtable",       "sku_crosswalk"],
   ["afw_airtable",       "master_airtable_sku"],

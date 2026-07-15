@@ -5,7 +5,7 @@ config {
     uniqueKey: ["sku"],
     nonNull: ["sku"]
   },
-  description: "MART: velocity bán (units/ngày) theo master SKU, gộp 4 sàn (Lecangs/Amazon/Wayfair/Walmart), cửa sổ 28 ngày. daily_demand = tổng 4 sàn. Nền demand cho forecast cross-warehouse.",
+  description: "MART: velocity bán (units/ngày) theo master SKU, gộp 6 sàn (Lecangs/Amazon/Wayfair/Walmart/Etsy/HomeDepot), cửa sổ 28 ngày. daily_demand = tổng 6 sàn. Nền demand cho forecast cross-warehouse.",
   tags: ["mart", "sales", "velocity", "cross_warehouse"],
   bigquery: { clusterBy: ["sku"] }
 }
@@ -45,11 +45,27 @@ walmart AS (
   WHERE DATE(l.order_date) >= DATE_SUB(CURRENT_DATE(), INTERVAL ${WINDOW_DAYS} DAY)
   GROUP BY 1
 ),
+etsy AS (
+  SELECT p.sku_id AS sku, SUM(l.quantity) AS u
+  FROM ${ref("master_etsy_order_line")} l
+  JOIN ${ref("master_airtable_sku")} p ON p.sku_id = l.sku_id
+  WHERE DATE(l.created_at) >= DATE_SUB(CURRENT_DATE(), INTERVAL ${WINDOW_DAYS} DAY)
+  GROUP BY 1
+),
+homedepot AS (
+  SELECT p.sku_id AS sku, SUM(l.quantity) AS u
+  FROM ${ref("master_homedepot_order_lines")} l
+  JOIN ${ref("master_airtable_sku")} p ON p.sku_id = l.sku
+  WHERE DATE(l.order_date_part) >= DATE_SUB(CURRENT_DATE(), INTERVAL ${WINDOW_DAYS} DAY)
+  GROUP BY 1
+),
 skus AS (
   SELECT sku FROM lecangs
   UNION DISTINCT SELECT sku FROM amazon
   UNION DISTINCT SELECT sku FROM wayfair
   UNION DISTINCT SELECT sku FROM walmart
+  UNION DISTINCT SELECT sku FROM etsy
+  UNION DISTINCT SELECT sku FROM homedepot
 )
 SELECT
   s.sku,
@@ -57,9 +73,13 @@ SELECT
   ROUND(IFNULL(amazon.u, 0)  / ${WINDOW_DAYS}.0, 3)  AS dd_amazon,
   ROUND(IFNULL(wayfair.u, 0) / ${WINDOW_DAYS}.0, 3)  AS dd_wayfair,
   ROUND(IFNULL(walmart.u, 0) / ${WINDOW_DAYS}.0, 3)  AS dd_walmart,
-  ROUND((IFNULL(lecangs.u, 0) + IFNULL(amazon.u, 0) + IFNULL(wayfair.u, 0) + IFNULL(walmart.u, 0)) / ${WINDOW_DAYS}.0, 3) AS daily_demand
+  ROUND(IFNULL(etsy.u, 0)    / ${WINDOW_DAYS}.0, 3)  AS dd_etsy,
+  ROUND(IFNULL(homedepot.u, 0) / ${WINDOW_DAYS}.0, 3) AS dd_homedepot,
+  ROUND((IFNULL(lecangs.u, 0) + IFNULL(amazon.u, 0) + IFNULL(wayfair.u, 0) + IFNULL(walmart.u, 0) + IFNULL(etsy.u, 0) + IFNULL(homedepot.u, 0)) / ${WINDOW_DAYS}.0, 3) AS daily_demand
 FROM skus s
-LEFT JOIN lecangs USING (sku)
-LEFT JOIN amazon  USING (sku)
-LEFT JOIN wayfair USING (sku)
-LEFT JOIN walmart USING (sku)
+LEFT JOIN lecangs   USING (sku)
+LEFT JOIN amazon    USING (sku)
+LEFT JOIN wayfair   USING (sku)
+LEFT JOIN walmart   USING (sku)
+LEFT JOIN etsy      USING (sku)
+LEFT JOIN homedepot USING (sku)
