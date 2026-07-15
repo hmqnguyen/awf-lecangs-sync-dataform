@@ -5,131 +5,133 @@ config {
     uniqueKey: ["target_month", "sku", "platform"],
     nonNull: ["sku", "platform"]
   },
-  description: "MART: mỗi SKU × platform × tháng — tồn vật lý TỔNG (tách theo từng nguồn kho: FBA/Castlegate/Lecangs/WFS) + đã bán MTD + channel ATS (Airtable) + target (Airtable) + đánh giá. Cột tồn lặp theo SKU (không phụ thuộc platform) để report pivot ra dạng bảng ngang.",
+  description: "MART: SKU × sàn × tháng — tồn Mỹ TỔNG (4 kho, từ mart_sku_onhand_us) + đã bán MTD theo sàn + TARGET + CHANNEL ATS (phân bổ tự động). channel_ats = FLOOR(target × LEAST(1, tồn_tổng / Σtarget)) → khi thiếu tồn chung, chia theo tỉ lệ target, tổng ATS ≤ tồn vật lý → chặn oversell giữa các sàn. Target hiện dùng velocity fallback (chờ dim_sales_target).",
   tags: ["mart", "channel", "ats", "target", "cross_warehouse"],
   bigquery: { clusterBy: ["sku", "platform"] }
 }
 
 /*
-  ⚠️ VERIFY — NGUỒN CHƯA CÓ, phải bổ sung trước khi mart này ra số đầy đủ:
+  CHANNEL ATS = phân bổ tự động (không lấy từ Airtable nữa):
+    factor = LEAST(1, total_on_hand / Σtarget)
+    channel_ats[sàn] = FLOOR(target[sàn] × factor)
+      - Đủ tồn (total ≥ Σtarget): factor=1 → ats = target (không bán vượt kế hoạch).
+      - Thiếu tồn: factor<1 → chia theo tỉ lệ target, Σats ≤ tồn thật → chống oversell.
+    FLOOR (làm tròn xuống) đảm bảo tổng phân bổ không bao giờ vượt tồn vật lý.
 
-  (A) dim_channel_ats     — Airtable (NHẬP TAY). API sàn chỉ trả tồn vật lý, không trả ATS.
-      Cột: platform, sku_code, ats_qty, updated_at
-  (B) dim_sales_target    — Airtable (Sales/SCM nhập tay).
-      Cột: platform, sku_code, target_month (DATE đầu tháng), target_units
-  (C) Tồn FBA / Castlegate / WFS — pipeline CHƯA BUILD (chỉ Lecangs có).
-      Tạm thời on_hand_fba / on_hand_castlegate / on_hand_wfs = 0 → total_on_hand chỉ gồm Lecangs.
-      Khi có pipeline: thêm CTE + cộng vào total_on_hand.
-  (D) Đã bán MTD theo platform — Lecangs ledger chỉ phân biệt 2C (B2C) / 2B (B2B),
-      KHÔNG biết đơn đến từ sàn nào. Cần mapping reference_no → channel (đã có trong backlog "Trung hạn").
-      Trước khi có mapping: 2C → 'SHOPIFY' (Lecangs chỉ fulfill Shopify), 2B → 'B2B'.
+  ⚠️ TARGET: hiện dùng VELOCITY fallback (dd_channel × số ngày trong tháng) từ mart_sku_velocity.
+     Khi có dim_sales_target (Airtable) → thay CTE `tgt` bằng target thật (đã chừa comment).
+     (dim_channel_ats KHÔNG cần nữa — ATS được tính, không nhập tay.)
 */
 
--- F4: DECLARE KHÔNG được nằm trong body type:table (CREATE TABLE AS (DECLARE...) = lỗi cú pháp).
--- Inline qua CTE cal; tham chiếu bằng CROSS JOIN cal.
 WITH
 cal AS (
-  SELECT DATE_TRUNC(CURRENT_DATE(), MONTH) AS month_start, LAST_DAY(CURRENT_DATE(), MONTH) AS month_end
-),
--- (1) TỒN VẬT LÝ theo từng NGUỒN KHO (grain: SKU)
-on_hand AS (
   SELECT
-    goods_code                                    AS sku,
-    MAX(snapshot_date)                            AS snapshot_date,
-    SUM(goods_num)                                AS on_hand_lecangs,
-    -- ⚠️ pipeline chưa có → 0. Thay bằng CTE thật khi build xong.
-    0                                             AS on_hand_fba,
-    0                                             AS on_hand_castlegate,
-    0                                             AS on_hand_wfs
-  FROM ${ref("master_lecangs_inventory")}
-  WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM ${ref("master_lecangs_inventory")})
-  GROUP BY goods_code
+    DATE_TRUNC(CURRENT_DATE(), MONTH)                                          AS month_start,
+    LAST_DAY(CURRENT_DATE(), MONTH)                                            AS month_end,
+    DATE_DIFF(LAST_DAY(CURRENT_DATE(), MONTH), DATE_TRUNC(CURRENT_DATE(), MONTH), DAY) + 1 AS days_in_month,
+    DATE_DIFF(CURRENT_DATE(), DATE_TRUNC(CURRENT_DATE(), MONTH), DAY) + 1       AS days_elapsed,
+    DATE_DIFF(LAST_DAY(CURRENT_DATE(), MONTH), CURRENT_DATE(), DAY)            AS days_remaining
 ),
 
--- (2) ĐÃ BÁN MTD — ⚠️ (D): 2C→SHOPIFY, 2B→B2B cho tới khi có mapping reference_no → channel
-sold_mtd AS (
-  SELECT
-    goods_code AS sku,
-    CASE business_type_label WHEN '2C_order' THEN 'SHOPIFY' WHEN '2B_order' THEN 'B2B' END AS platform,
-    SUM(-qty_delta) AS sold_units_mtd
-  FROM ${ref("master_lecangs_inventory_flow")}
-  WHERE qty_delta < 0
-    AND business_type_label IN ('2C_order','2B_order')
-    AND flow_date BETWEEN (SELECT month_start FROM cal) AND CURRENT_DATE()
-  GROUP BY sku, platform
+-- (1) Tồn Mỹ tổng + tách nguồn (mart nền cross-warehouse)
+oh AS (
+  SELECT sku, on_hand_us AS total_on_hand,
+         on_hand_lecangs, on_hand_fba, on_hand_castlegate, on_hand_walmart
+  FROM ${ref("mart_sku_onhand_us")}
 ),
 
--- (3) ⚠️ ATS — Airtable. Bật khi dim_channel_ats sẵn sàng.
--- ats AS (
---   SELECT platform, sku_code AS sku, ats_qty FROM ${'${ref("dim_channel_ats")}'}
--- ),
+-- (2) Velocity 4 sàn (nền để suy target fallback)
+vel AS (SELECT sku, dd_lecangs, dd_amazon, dd_wayfair, dd_walmart FROM ${ref("mart_sku_velocity")}),
 
--- (4) ⚠️ TARGET — Airtable. Bật khi dim_sales_target sẵn sàng.
--- target AS (
---   SELECT platform, sku_code AS sku, target_units FROM ${'${ref("dim_sales_target")}'}
---   WHERE target_month = month_start
--- ),
+-- (3) TARGET theo sàn. Fallback = velocity × số ngày trong tháng.
+--     ⚠️ Khi có dim_sales_target: thay khối này bằng
+--     SELECT platform, sku_code AS sku, target_units FROM ${'${ref("dim_sales_target")}'} WHERE target_month = month_start
+tgt AS (
+  SELECT sku, 'SHOPIFY' AS platform, CAST(ROUND(dd_lecangs * (SELECT days_in_month FROM cal)) AS INT64) AS target_units FROM vel
+  UNION ALL SELECT sku, 'AMAZON',  CAST(ROUND(dd_amazon  * (SELECT days_in_month FROM cal)) AS INT64) FROM vel
+  UNION ALL SELECT sku, 'WAYFAIR', CAST(ROUND(dd_wayfair * (SELECT days_in_month FROM cal)) AS INT64) FROM vel
+  UNION ALL SELECT sku, 'WALMART', CAST(ROUND(dd_walmart * (SELECT days_in_month FROM cal)) AS INT64) FROM vel
+),
+tgt_sum AS (SELECT sku, SUM(target_units) AS sum_target FROM tgt GROUP BY sku),
 
--- (5) khung SKU × platform. Hiện dựng từ sold; khi có ats/target → UNION key để không sót
---     SKU có target nhưng chưa bán được cái nào (đó chính là case cần cảnh báo nhất).
-grid AS (
-  SELECT sku, platform FROM sold_mtd WHERE platform IS NOT NULL
-  -- UNION DISTINCT SELECT sku, platform FROM ats
-  -- UNION DISTINCT SELECT sku, platform FROM target
+-- (4) Đã bán MTD theo sàn (cross-channel)
+sold_amz AS (
+  SELECT x.master_sku_id AS sku, 'AMAZON' AS platform, SUM(o.quantity) AS sold
+  FROM ${ref("master_amazon_orders")} o
+  JOIN ${ref("sku_crosswalk")} x ON x.channel='amazon' AND x.channel_sku=o.sku
+  WHERE DATE(o.purchase_date) BETWEEN (SELECT month_start FROM cal) AND CURRENT_DATE()
+  GROUP BY 1
+),
+sold_way AS (
+  SELECT p.sku_id AS sku, 'WAYFAIR' AS platform, SUM(l.quantity) AS sold
+  FROM ${ref("master_wayfair_order_line")} l
+  JOIN ${ref("master_airtable_sku")} p ON p.sku_id=l.part_number
+  WHERE DATE(l.order_date) BETWEEN (SELECT month_start FROM cal) AND CURRENT_DATE()
+  GROUP BY 1
+),
+sold_wmt AS (
+  SELECT p.sku_id AS sku, 'WALMART' AS platform, SUM(l.qty) AS sold
+  FROM ${ref("master_walmart_order_lines")} l
+  JOIN ${ref("master_airtable_sku")} p ON p.sku_id=l.sku
+  WHERE DATE(l.order_date) BETWEEN (SELECT month_start FROM cal) AND CURRENT_DATE()
+  GROUP BY 1
+),
+sold_shp AS (
+  SELECT x.master_sku_id AS sku, 'SHOPIFY' AS platform, SUM(-f.qty_delta) AS sold
+  FROM ${ref("master_lecangs_inventory_flow")} f
+  JOIN ${ref("sku_crosswalk")} x ON x.channel='lecangs' AND x.channel_sku=f.goods_code
+  WHERE f.qty_delta < 0 AND f.business_type_label IN ('2C_order','2B_order')
+    AND f.flow_date BETWEEN (SELECT month_start FROM cal) AND CURRENT_DATE()
+  GROUP BY 1
+),
+sold AS (
+  SELECT * FROM sold_amz UNION ALL SELECT * FROM sold_way UNION ALL SELECT * FROM sold_wmt UNION ALL SELECT * FROM sold_shp
 ),
 
 calc AS (
   SELECT
-    g.sku,
-    g.platform,
-    o.snapshot_date,
-    o.on_hand_fba, o.on_hand_castlegate, o.on_hand_lecangs, o.on_hand_wfs,
-    o.on_hand_fba + o.on_hand_castlegate + o.on_hand_lecangs + o.on_hand_wfs AS total_on_hand,
-    COALESCE(s.sold_units_mtd, 0)                  AS sold_units_mtd,
-    CAST(NULL AS INT64)                            AS channel_ats,       -- ⚠️ ats.ats_qty
-    CAST(NULL AS INT64)                            AS target_units,      -- ⚠️ target.target_units
-    DATE_DIFF(CURRENT_DATE(), (SELECT month_start FROM cal), DAY) + 1 AS days_elapsed,
-    DATE_DIFF((SELECT month_end FROM cal), CURRENT_DATE(), DAY)       AS days_remaining
-  FROM grid g
-  LEFT JOIN on_hand  o USING (sku)
-  LEFT JOIN sold_mtd s USING (sku, platform)
-  -- LEFT JOIN ats    USING (sku, platform)
-  -- LEFT JOIN target USING (sku, platform)
+    t.sku, t.platform, t.target_units,
+    IFNULL(oh.total_on_hand, 0) AS total_on_hand,
+    oh.on_hand_lecangs, oh.on_hand_fba, oh.on_hand_castlegate, oh.on_hand_walmart,
+    ts.sum_target,
+    LEAST(1, SAFE_DIVIDE(IFNULL(oh.total_on_hand, 0), NULLIF(ts.sum_target, 0))) AS alloc_factor,
+    IFNULL(s.sold, 0) AS sold_units_mtd
+  FROM tgt t
+  LEFT JOIN oh      USING (sku)
+  LEFT JOIN tgt_sum ts USING (sku)
+  LEFT JOIN sold    s USING (sku, platform)
 )
 
 SELECT
   (SELECT month_start FROM cal) AS target_month,
   sku,
   platform,
-  snapshot_date,
 
   -- ===== TỒN VẬT LÝ (lặp theo SKU) =====
   total_on_hand,
-  on_hand_fba,
-  on_hand_castlegate,
-  on_hand_lecangs,
-  on_hand_wfs,
+  on_hand_lecangs, on_hand_fba, on_hand_castlegate, on_hand_walmart,
 
-  -- ===== PER-PLATFORM =====
-  sold_units_mtd,
-  channel_ats,
+  -- ===== TARGET & ATS (phân bổ) =====
   target_units,
-  GREATEST(COALESCE(target_units,0) - sold_units_mtd, 0)                AS remaining_target_units,
-  ROUND(SAFE_DIVIDE(sold_units_mtd, NULLIF(target_units,0)), 4)         AS attainment_pct,
-  ROUND(SAFE_DIVIDE(sold_units_mtd, NULLIF(days_elapsed,0)), 3)         AS actual_daily_run_rate,
-  ROUND(SAFE_DIVIDE(GREATEST(COALESCE(target_units,0) - sold_units_mtd, 0),
-                    NULLIF(days_remaining,0)), 3)                       AS required_daily_run_rate,
-  days_elapsed,
-  days_remaining,
+  sum_target,
+  ROUND(alloc_factor, 4)                                              AS alloc_factor,
+  CAST(FLOOR(target_units * IFNULL(alloc_factor, 0)) AS INT64)        AS channel_ats,
+
+  -- ===== BÁN & CÒN LẠI =====
+  sold_units_mtd,
+  GREATEST(target_units - sold_units_mtd, 0)                          AS remaining_target_units,
+  -- còn được bán bao nhiêu trước khi chạm cap ATS (âm = đã vượt phần phân bổ)
+  CAST(FLOOR(target_units * IFNULL(alloc_factor, 0)) AS INT64) - sold_units_mtd AS sellable_left_units,
+  ROUND(SAFE_DIVIDE(sold_units_mtd, NULLIF(target_units, 0)), 4)      AS attainment_pct,
+  (SELECT days_elapsed FROM cal)                                     AS days_elapsed,
+  (SELECT days_remaining FROM cal)                                   AS days_remaining,
 
   -- ===== ĐÁNH GIÁ =====
-  -- Phân biệt SHORT_STOCK (lỗi SCM: không đủ hàng) vs BEHIND_PACE (lỗi Sales: hàng đủ, bán chậm).
   CASE
-    WHEN COALESCE(target_units,0) = 0            THEN 'NO_TARGET'
-    WHEN sold_units_mtd >= target_units          THEN 'TARGET_MET'
-    WHEN COALESCE(channel_ats,0) < target_units - sold_units_mtd THEN 'SHORT_STOCK'
-    WHEN SAFE_DIVIDE(sold_units_mtd, NULLIF(days_elapsed,0))
-       < SAFE_DIVIDE(target_units - sold_units_mtd, NULLIF(days_remaining,0)) THEN 'BEHIND_PACE'
+    WHEN target_units = 0                                              THEN 'NO_TARGET'
+    WHEN sold_units_mtd >= target_units                               THEN 'TARGET_MET'
+    -- ATS bị cắt < target còn lại → thiếu tồn chung (lỗi SCM), rủi ro oversell
+    WHEN CAST(FLOOR(target_units * IFNULL(alloc_factor, 0)) AS INT64) < (target_units - sold_units_mtd) THEN 'SHORT_STOCK'
     ELSE 'ON_TRACK'
-  END                                                                   AS evaluation
+  END                                                                 AS evaluation
 FROM calc
