@@ -1,0 +1,65 @@
+config {
+  type: "table",
+  schema: dataform.projectConfig.vars.mart_dataset,
+  assertions: {
+    uniqueKey: ["sku"],
+    nonNull: ["sku"]
+  },
+  description: "MART: velocity bán (units/ngày) theo master SKU, gộp 4 sàn (Lecangs/Amazon/Wayfair/Walmart), cửa sổ 28 ngày. daily_demand = tổng 4 sàn. Nền demand cho forecast cross-warehouse.",
+  tags: ["mart", "sales", "velocity", "cross_warehouse"],
+  bigquery: { clusterBy: ["sku"] }
+}
+
+js {
+  const WINDOW_DAYS = 28;
+}
+
+WITH
+lecangs AS (
+  SELECT x.master_sku_id AS sku, SUM(-f.qty_delta) AS u
+  FROM ${ref("master_lecangs_inventory_flow")} f
+  JOIN ${ref("sku_crosswalk")} x ON x.channel = 'lecangs' AND x.channel_sku = f.goods_code
+  WHERE f.qty_delta < 0
+    AND f.business_type_label IN ('2C_order', '2B_order')
+    AND f.flow_date >= DATE_SUB(CURRENT_DATE(), INTERVAL ${WINDOW_DAYS} DAY)
+  GROUP BY 1
+),
+amazon AS (
+  SELECT x.master_sku_id AS sku, SUM(o.quantity) AS u
+  FROM ${ref("master_amazon_orders")} o
+  JOIN ${ref("sku_crosswalk")} x ON x.channel = 'amazon' AND x.channel_sku = o.sku
+  WHERE DATE(o.purchase_date) >= DATE_SUB(CURRENT_DATE(), INTERVAL ${WINDOW_DAYS} DAY)
+  GROUP BY 1
+),
+wayfair AS (
+  SELECT p.sku_id AS sku, SUM(l.quantity) AS u
+  FROM ${ref("master_wayfair_order_line")} l
+  JOIN ${ref("master_airtable_sku")} p ON p.sku_id = l.part_number
+  WHERE DATE(l.order_date) >= DATE_SUB(CURRENT_DATE(), INTERVAL ${WINDOW_DAYS} DAY)
+  GROUP BY 1
+),
+walmart AS (
+  SELECT p.sku_id AS sku, SUM(l.qty) AS u
+  FROM ${ref("master_walmart_order_lines")} l
+  JOIN ${ref("master_airtable_sku")} p ON p.sku_id = l.sku
+  WHERE DATE(l.order_date) >= DATE_SUB(CURRENT_DATE(), INTERVAL ${WINDOW_DAYS} DAY)
+  GROUP BY 1
+),
+skus AS (
+  SELECT sku FROM lecangs
+  UNION DISTINCT SELECT sku FROM amazon
+  UNION DISTINCT SELECT sku FROM wayfair
+  UNION DISTINCT SELECT sku FROM walmart
+)
+SELECT
+  s.sku,
+  ROUND(IFNULL(lecangs.u, 0) / ${WINDOW_DAYS}.0, 3)  AS dd_lecangs,
+  ROUND(IFNULL(amazon.u, 0)  / ${WINDOW_DAYS}.0, 3)  AS dd_amazon,
+  ROUND(IFNULL(wayfair.u, 0) / ${WINDOW_DAYS}.0, 3)  AS dd_wayfair,
+  ROUND(IFNULL(walmart.u, 0) / ${WINDOW_DAYS}.0, 3)  AS dd_walmart,
+  ROUND((IFNULL(lecangs.u, 0) + IFNULL(amazon.u, 0) + IFNULL(wayfair.u, 0) + IFNULL(walmart.u, 0)) / ${WINDOW_DAYS}.0, 3) AS daily_demand
+FROM skus s
+LEFT JOIN lecangs USING (sku)
+LEFT JOIN amazon  USING (sku)
+LEFT JOIN wayfair USING (sku)
+LEFT JOIN walmart USING (sku)
