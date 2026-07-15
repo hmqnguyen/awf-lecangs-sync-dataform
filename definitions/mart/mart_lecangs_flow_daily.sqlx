@@ -1,0 +1,87 @@
+config {
+  type: "table",
+  schema: dataform.projectConfig.vars.mart_dataset,
+  assertions: {
+    uniqueKey: ["flow_date", "warehouse_code"],
+    nonNull: ["flow_date", "warehouse_code"]
+  },
+  description: "MART: throughput inbound/outbound theo NGÀY × KHO (Lecangs). Nguồn: inventory_flow ledger (qty_delta +/-). INBOUND TÁCH 2 LOẠI: receipt (ASN container 101501 — hàng từ HT/NM5) vs return (RL 101503 — hàng khách trả). Outbound tách 2C (B2C) vs 2B (wholesale). Nền để tính hiệu quả chi phí và tỉ lệ hoàn.",
+  tags: ["mart", "lecangs", "flow", "throughput", "returns"],
+  bigquery: { partitionBy: "flow_date", clusterBy: ["warehouse_code"] }
+}
+
+-- Quy ước dấu: qty_delta > 0 = nhập kho; qty_delta < 0 = xuất kho.
+-- Mọi cột *_units trả SỐ DƯƠNG (đã đảo dấu), trừ net_units / transfer_units / adjustment_units.
+--
+-- ⚠️ Ledger business_type 101907 ('inbound') GỘP cả container ASN lẫn hàng hoàn RL.
+--    Muốn tách phải join về ASN header lấy asn_kind (101501 inbound / 101503 return).
+--    business_no của dòng ledger inbound = asn_no.
+WITH asn AS (
+  SELECT asn_no, asn_kind
+  FROM ${ref("master_lecangs_inbound_asn")}
+),
+
+flow AS (
+  SELECT
+    f.*,
+    -- phân loại inbound: ưu tiên asn_kind từ header; fallback theo prefix asn_no (RL-* = hàng hoàn)
+    CASE
+      WHEN f.business_type_label <> 'inbound'       THEN NULL
+      WHEN a.asn_kind IS NOT NULL                   THEN a.asn_kind
+      WHEN STARTS_WITH(UPPER(f.business_no), 'RL')  THEN 'return'    -- fallback: ASN chưa sync kịp
+      WHEN STARTS_WITH(UPPER(f.business_no), 'ASN') THEN 'inbound'
+      ELSE 'unknown'
+    END AS inbound_kind
+  FROM ${ref("master_lecangs_inventory_flow")} f
+  LEFT JOIN asn a ON f.business_no = a.asn_no
+  WHERE f.flow_date IS NOT NULL
+)
+
+SELECT
+  flow_date,
+  warehouse_code,
+  ANY_VALUE(brand)                                                                  AS brand,
+
+  -- ===== INBOUND — tách RECEIPT vs RETURN =====
+  SUM(IF(inbound_kind = 'inbound' AND qty_delta > 0, qty_delta, 0))                 AS inbound_receipt_units,   -- hàng từ HT/NM5 (container ASN)
+  SUM(IF(inbound_kind = 'return'  AND qty_delta > 0, qty_delta, 0))                 AS inbound_return_units,    -- hàng khách trả (RL)
+  SUM(IF(inbound_kind = 'unknown' AND qty_delta > 0, qty_delta, 0))                 AS inbound_unknown_units,   -- chưa phân loại được → cần soi
+  SUM(IF(business_type_label = 'inbound' AND qty_delta > 0, qty_delta, 0))          AS inbound_units,           -- tổng (giữ backward-compat)
+  COUNT(DISTINCT IF(inbound_kind = 'inbound', business_no, NULL))                   AS inbound_receipt_refs,    -- số ASN container
+  COUNT(DISTINCT IF(inbound_kind = 'return',  business_no, NULL))                   AS inbound_return_refs,     -- số phiếu hoàn RL
+  COUNT(DISTINCT IF(business_type_label = 'inbound', business_no, NULL))            AS inbound_refs,
+  COUNT(DISTINCT IF(business_type_label = 'inbound', goods_code, NULL))             AS inbound_sku_count,
+
+  -- Returns ẩn: dòng 2C/2B có qty_delta > 0 = huỷ/hoàn ghi thẳng vào đơn (không mở RL ASN).
+  -- Tách riêng, KHÔNG cộng vào inbound_units để tránh double-count.
+  SUM(IF(business_type_label IN ('2C_order','2B_order') AND qty_delta > 0, qty_delta, 0)) AS restock_via_order_units,
+
+  -- ===== OUTBOUND =====
+  SUM(IF(business_type_label = '2C_order' AND qty_delta < 0, -qty_delta, 0))        AS outbound_2c_units,
+  SUM(IF(business_type_label = '2B_order' AND qty_delta < 0, -qty_delta, 0))        AS outbound_2b_units,
+  SUM(IF(business_type_label IN ('2C_order','2B_order') AND qty_delta < 0,
+         -qty_delta, 0))                                                            AS outbound_units,
+  COUNT(DISTINCT IF(business_type_label = '2C_order', business_no, NULL))           AS outbound_2c_orders,
+  COUNT(DISTINCT IF(business_type_label = '2B_order', business_no, NULL))           AS outbound_2b_orders,
+  COUNT(DISTINCT IF(business_type_label IN ('2C_order','2B_order'), goods_code, NULL)) AS outbound_sku_count,
+
+  -- ===== TỈ LỆ HOÀN =====
+  -- return_rate = hàng trả về / hàng xuất bán (cùng ngày). Ở grain NGÀY sẽ nhiễu vì hàng trả
+  -- về sau đơn gốc vài tuần → nên đọc ở mức tuần/tháng hoặc rolling window ở tầng report.
+  ROUND(SAFE_DIVIDE(
+    SUM(IF(inbound_kind = 'return' AND qty_delta > 0, qty_delta, 0))
+      + SUM(IF(business_type_label IN ('2C_order','2B_order') AND qty_delta > 0, qty_delta, 0)),
+    NULLIF(SUM(IF(business_type_label IN ('2C_order','2B_order') AND qty_delta < 0, -qty_delta, 0)), 0)
+  ), 4)                                                                             AS return_rate,
+
+  -- ===== NET & nghiệp vụ khác =====
+  SUM(qty_delta)                                                                    AS net_units,
+  SUM(IF(business_type_label = 'transfer', qty_delta, 0))                           AS transfer_units,
+  SUM(IF(business_type_label IN ('inventory_adjustment','inventory_adjustment_order','inventory_abnormality','stocktaking'),
+         qty_delta, 0))                                                             AS adjustment_units,
+  SUM(IF(business_type_label = 'destruction' AND qty_delta < 0, -qty_delta, 0))     AS destruction_units,
+  SUM(IF(business_type_label = '4spl_order' AND qty_delta < 0, -qty_delta, 0))      AS outbound_4spl_units,
+
+  COUNT(*)                                                                          AS flow_line_count
+FROM flow
+GROUP BY flow_date, warehouse_code

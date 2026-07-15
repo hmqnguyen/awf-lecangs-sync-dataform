@@ -5,21 +5,119 @@ config {
     uniqueKey: ["cost_date", "warehouse_code"],
     nonNull: ["cost_date", "warehouse_code"]
   },
-  description: "MART: tổng chi phí logistics theo NGÀY × KHO (Lecangs). So sánh chi phí cấp kho; khi union thêm mart kho khác (Castlegate/FBA/WFS) sẽ so chéo được toàn hệ thống.",
-  tags: ["mart", "lecangs", "cost"],
+  description: "MART: tổng chi phí logistics theo NGÀY × KHO (Lecangs) + THROUGHPUT inbound/outbound cùng grain → hiệu quả chi phí ($/unit inbound, $/unit outbound, $/đơn). So sánh chi phí cấp kho; khi union thêm mart kho khác (Castlegate/FBA/WFS) sẽ so chéo được toàn hệ thống.",
+  tags: ["mart", "lecangs", "cost", "throughput"],
   bigquery: { partitionBy: "cost_date", clusterBy: ["warehouse_code"] }
 }
 
+WITH
+-- (1) CHI PHÍ theo ngày × kho
+cost AS (
+  SELECT
+    cost_date,
+    warehouse_code,
+    ANY_VALUE(brand)                                             AS brand,
+    SUM(IF(cost_type = 'fulfillment', allocated_amount, 0))      AS fulfillment_cost,
+    SUM(IF(cost_type = 'storage',     allocated_amount, 0))      AS storage_cost,
+    SUM(IF(cost_type = 'inbound',     allocated_amount, 0))      AS inbound_cost,
+    SUM(allocated_amount)                                        AS total_logistics_cost,
+    SUM(IF(allocation_basis = 'unmatched', allocated_amount, 0)) AS unallocated_cost,
+    COUNT(DISTINCT NULLIF(TRIM(goods_code), ''))                AS sku_count,   -- I7: '' không phải NULL
+    COUNT(DISTINCT ref_no)                                       AS ref_count,
+    ANY_VALUE(currency)                                          AS currency
+  FROM ${ref("fact_sku_logistics_cost")}
+  GROUP BY cost_date, warehouse_code
+),
+
+-- (2) THROUGHPUT theo ngày × kho (đọc thẳng master flow — giữ mart độc lập, không coupling mart→mart)
+--     Inbound tách receipt (ASN container) vs return (RL hàng hoàn) qua asn_kind.
+asn AS (
+  SELECT asn_no, asn_kind FROM ${ref("master_lecangs_inbound_asn")}
+),
+
+flow_raw AS (
+  SELECT
+    f.*,
+    CASE
+      WHEN f.business_type_label <> 'inbound'       THEN NULL
+      WHEN a.asn_kind IS NOT NULL                   THEN a.asn_kind
+      WHEN STARTS_WITH(UPPER(f.business_no), 'RL')  THEN 'return'
+      WHEN STARTS_WITH(UPPER(f.business_no), 'ASN') THEN 'inbound'
+      ELSE 'unknown'
+    END AS inbound_kind
+  FROM ${ref("master_lecangs_inventory_flow")} f
+  LEFT JOIN asn a ON f.business_no = a.asn_no
+  WHERE f.flow_date IS NOT NULL
+),
+
+flow AS (
+  SELECT
+    flow_date                                                                       AS cost_date,
+    warehouse_code,
+    SUM(IF(inbound_kind = 'inbound' AND qty_delta > 0, qty_delta, 0))               AS inbound_receipt_units,
+    SUM(IF(inbound_kind = 'return'  AND qty_delta > 0, qty_delta, 0))               AS inbound_return_units,
+    SUM(IF(business_type_label = 'inbound' AND qty_delta > 0, qty_delta, 0))        AS inbound_units,
+    COUNT(DISTINCT IF(inbound_kind = 'inbound', business_no, NULL))                 AS inbound_receipt_refs,
+    COUNT(DISTINCT IF(inbound_kind = 'return',  business_no, NULL))                 AS inbound_return_refs,
+    COUNT(DISTINCT IF(business_type_label = 'inbound', business_no, NULL))          AS inbound_refs,
+    SUM(IF(business_type_label IN ('2C_order','2B_order') AND qty_delta > 0, qty_delta, 0)) AS restock_via_order_units,
+    SUM(IF(business_type_label = '2C_order' AND qty_delta < 0, -qty_delta, 0))      AS outbound_2c_units,
+    SUM(IF(business_type_label = '2B_order' AND qty_delta < 0, -qty_delta, 0))      AS outbound_2b_units,
+    SUM(IF(business_type_label IN ('2C_order','2B_order') AND qty_delta < 0,
+           -qty_delta, 0))                                                          AS outbound_units,
+    COUNT(DISTINCT IF(business_type_label = '2C_order', business_no, NULL))         AS outbound_2c_orders,
+    COUNT(DISTINCT IF(business_type_label = '2B_order', business_no, NULL))         AS outbound_2b_orders,
+    SUM(qty_delta)                                                                  AS net_units
+  FROM flow_raw
+  GROUP BY flow_date, warehouse_code
+)
+
+-- FULL OUTER: có ngày phát sinh phí mà không có flow (vd storage rent), và ngược lại.
 SELECT
-  cost_date,
-  warehouse_code,
-  ANY_VALUE(brand)                                                    AS brand,
-  SUM(IF(cost_type = 'fulfillment', allocated_amount, 0))             AS fulfillment_cost,
-  SUM(IF(cost_type = 'storage',     allocated_amount, 0))             AS storage_cost,
-  SUM(IF(cost_type = 'inbound',     allocated_amount, 0))             AS inbound_cost,
-  SUM(allocated_amount)                                              AS total_logistics_cost,
-  COUNT(DISTINCT NULLIF(TRIM(goods_code), ''))                       AS sku_count,   -- I7: '' không phải NULL
-  COUNT(DISTINCT ref_no)                                              AS ref_count,
-  ANY_VALUE(currency)                                                AS currency
-FROM ${ref("fact_sku_logistics_cost")}
-GROUP BY cost_date, warehouse_code
+  COALESCE(c.cost_date, f.cost_date)             AS cost_date,
+  COALESCE(c.warehouse_code, f.warehouse_code)   AS warehouse_code,
+  c.brand,
+
+  -- chi phí
+  COALESCE(c.fulfillment_cost, 0)                AS fulfillment_cost,
+  COALESCE(c.storage_cost, 0)                    AS storage_cost,
+  COALESCE(c.inbound_cost, 0)                    AS inbound_cost,
+  COALESCE(c.total_logistics_cost, 0)            AS total_logistics_cost,
+  COALESCE(c.unallocated_cost, 0)                AS unallocated_cost,
+  c.sku_count,
+  c.ref_count,
+  COALESCE(c.currency, 'USD')                    AS currency,
+
+  -- ===== THROUGHPUT (NEW) =====
+  COALESCE(f.inbound_receipt_units, 0)           AS inbound_receipt_units,  -- hàng từ HT/NM5 (ASN container)
+  COALESCE(f.inbound_return_units, 0)            AS inbound_return_units,   -- hàng khách trả (RL)
+  COALESCE(f.inbound_units, 0)                   AS inbound_units,          -- tổng (receipt + return)
+  COALESCE(f.inbound_receipt_refs, 0)            AS inbound_receipt_refs,
+  COALESCE(f.inbound_return_refs, 0)             AS inbound_return_refs,
+  COALESCE(f.inbound_refs, 0)                    AS inbound_refs,
+  COALESCE(f.restock_via_order_units, 0)         AS restock_via_order_units, -- returns ẩn ghi thẳng vào đơn
+  COALESCE(f.outbound_units, 0)                  AS outbound_units,
+  COALESCE(f.outbound_2c_units, 0)               AS outbound_2c_units,     -- B2C
+  COALESCE(f.outbound_2b_units, 0)               AS outbound_2b_units,     -- wholesale
+  COALESCE(f.outbound_2c_orders, 0)              AS outbound_2c_orders,
+  COALESCE(f.outbound_2b_orders, 0)              AS outbound_2b_orders,
+  COALESCE(f.outbound_2c_orders, 0)
+    + COALESCE(f.outbound_2b_orders, 0)          AS outbound_orders,
+  COALESCE(f.net_units, 0)                       AS net_units,             -- +tăng tồn / -giảm tồn
+
+  -- tỉ lệ hoàn (đọc ở mức tuần/tháng — grain ngày rất nhiễu, xem note ở mart_lecangs_flow_daily)
+  ROUND(SAFE_DIVIDE(COALESCE(f.inbound_return_units,0) + COALESCE(f.restock_via_order_units,0),
+        NULLIF(f.outbound_units,0)), 4)          AS return_rate,
+
+  -- ===== HIỆU QUẢ CHI PHÍ (NEW) =====
+  -- fulfillment gắn với hàng XUẤT; inbound cost (first-mile) chỉ gắn với hàng NHẬP TỪ HT —
+  -- KHÔNG gắn với hàng khách trả → mẫu số là inbound_receipt_units, không phải inbound_units.
+  ROUND(SAFE_DIVIDE(COALESCE(c.fulfillment_cost,0), NULLIF(f.outbound_units,0)), 4)   AS fulfillment_cost_per_outbound_unit,
+  ROUND(SAFE_DIVIDE(COALESCE(c.fulfillment_cost,0),
+        NULLIF(COALESCE(f.outbound_2c_orders,0) + COALESCE(f.outbound_2b_orders,0),0)), 4) AS fulfillment_cost_per_order,
+  ROUND(SAFE_DIVIDE(COALESCE(c.inbound_cost,0), NULLIF(f.inbound_receipt_units,0)), 4) AS inbound_cost_per_receipt_unit,
+  ROUND(SAFE_DIVIDE(COALESCE(c.total_logistics_cost,0), NULLIF(f.outbound_units,0)), 4) AS total_cost_per_outbound_unit
+FROM cost c
+FULL OUTER JOIN flow f
+  ON c.cost_date = f.cost_date
+ AND c.warehouse_code = f.warehouse_code

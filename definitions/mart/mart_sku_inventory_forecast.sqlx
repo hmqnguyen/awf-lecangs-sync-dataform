@@ -1,0 +1,195 @@
+config {
+  type: "table",
+  schema: dataform.projectConfig.vars.mart_dataset,
+  assertions: {
+    uniqueKey: ["sku", "platform", "forecast_month"],
+    nonNull: ["sku", "platform", "forecast_month"]
+  },
+  description: "MART: forecast tồn kho THÁNG × SKU × PLATFORM (rolling 6 tháng). Cân đối 5 tầng cung: tồn US + đang đi đường (ETA) + WIP đang SX (CRD + ocean) [+ tồn VN nếu quyết ship] - demand (target). Kèm channel ATS & target theo tháng, và PO chưa có lịch SX (chống đặt chồng).",
+  tags: ["mart", "forecast", "inventory", "po", "target", "vn_stock", "wip"],
+  bigquery: { clusterBy: ["sku", "platform", "forecast_month"] }
+}
+
+/*
+  ⚠️ VERIFY — NGUỒN AIRTABLE CẦN CÓ (anh cung cấp):
+
+  (A) dim_po_in_transit   — đang đi đường: po_no, sku_code, qty, eta_date, dest_warehouse, status
+                            ⚠️ lọc status <> 'received' để không double-count với tồn US.
+  (B) dim_vn_stock        — TỒN VN (thành phẩm, sẵn sàng ship): sku_code, qty, warehouse (NM5/kho HT)
+                            → transit VN→US: VN_SHIP_MONTHS (2–3 tháng, dùng 3 cho an toàn).
+                            ⚠️ KHÔNG tự cộng vào forecast: cần quyết định ship. Xem cột *_with_vn.
+  (C) dim_production_wip  — ĐANG SẢN XUẤT: po_no, sku_code, qty, crd_date (Cargo Ready Date)
+                            → ngày về US ≈ crd_date + VN_SHIP_MONTHS. ĐÃ CAM KẾT → cộng vào forecast.
+  (D) dim_po_unscheduled  — ĐÃ ĐẶT, CHƯA CÓ LỊCH SX: po_no, sku_code, qty, ordered_date
+                            ⚠️ KHÔNG cộng vào forecast (chưa biết ngày về). Chỉ hiển thị để CHỐNG ĐẶT CHỒNG PO.
+  (E) dim_sales_target    — platform, sku_code, target_month, target_units
+  (F) dim_channel_ats     — platform, sku_code, ats_month, ats_qty
+  (G) Tồn US ngoài Lecangs (FBA / Castlegate / WFS) — pipeline CHƯA BUILD.
+*/
+
+js {
+  const HORIZON_MONTHS = 6;
+  const VN_SHIP_MONTHS = 3;    // tồn VN / WIP sau CRD → về US: ship nhanh 2-3 tháng (lấy 3 cho an toàn)
+  const FULL_LEAD_DAYS = 180;  // đặt PO mới từ đầu → ready bán ở Mỹ
+  const SAFETY_DAYS    = 7;
+}
+
+-- F4: DECLARE KHÔNG được nằm trong body type:table → inline DATE_TRUNC(CURRENT_DATE(), MONTH).
+WITH
+months AS (
+  SELECT DATE_ADD(DATE_TRUNC(CURRENT_DATE(), MONTH), INTERVAL n MONTH) AS forecast_month, n AS month_index
+  FROM UNNEST(GENERATE_ARRAY(0, ${HORIZON_MONTHS} - 1)) AS n
+),
+
+-- (1) TỒN US hiện tại (⚠️ (G): hiện chỉ Lecangs)
+on_hand AS (
+  SELECT
+    goods_code         AS sku,
+    SUM(goods_num)     AS on_hand_lecangs,
+    0                  AS on_hand_fba,          -- ⚠️ pipeline chưa build
+    0                  AS on_hand_castlegate,   -- ⚠️
+    0                  AS on_hand_wfs,          -- ⚠️
+    MAX(snapshot_date) AS snapshot_date
+  FROM ${ref("master_lecangs_inventory")}
+  WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM ${ref("master_lecangs_inventory")})
+  GROUP BY goods_code
+),
+
+-- (2) ⚠️ ĐANG ĐI ĐƯỜNG — về theo ETA (đã cam kết)
+-- in_transit AS (
+--   SELECT sku_code AS sku, DATE_TRUNC(eta_date, MONTH) AS forecast_month,
+--          SUM(qty) AS in_transit_qty, STRING_AGG(DISTINCT po_no) AS in_transit_pos
+--   FROM ${'${ref("dim_po_in_transit")}'}
+--   WHERE LOWER(status) <> 'received' AND eta_date >= month_start
+--   GROUP BY sku, forecast_month
+-- ),
+
+-- (3) ⚠️ WIP ĐANG SẢN XUẤT — về US ≈ CRD + VN_SHIP_MONTHS (đã cam kết → cộng vào forecast)
+-- wip AS (
+--   SELECT sku_code AS sku,
+--          DATE_TRUNC(DATE_ADD(crd_date, INTERVAL ${VN_SHIP_MONTHS} MONTH), MONTH) AS forecast_month,
+--          SUM(qty) AS wip_qty, STRING_AGG(DISTINCT po_no) AS wip_pos,
+--          MIN(crd_date) AS earliest_crd
+--   FROM ${'${ref("dim_production_wip")}'}
+--   GROUP BY sku, forecast_month
+-- ),
+
+-- (4) ⚠️ TỒN VN — đòn bẩy, KHÔNG tự cộng. Về US sau VN_SHIP_MONTHS nếu quyết ship HÔM NAY.
+-- vn AS (
+--   SELECT sku_code AS sku, SUM(qty) AS vn_stock_qty FROM ${'${ref("dim_vn_stock")}'} GROUP BY sku
+-- ),
+
+-- (5) ⚠️ PO CHƯA CÓ LỊCH SX — chỉ để CHỐNG ĐẶT CHỒNG, không cộng vào forecast
+-- unsched AS (
+--   SELECT sku_code AS sku, SUM(qty) AS po_unscheduled_qty, STRING_AGG(DISTINCT po_no) AS po_unscheduled_pos
+--   FROM ${'${ref("dim_po_unscheduled")}'} GROUP BY sku
+-- ),
+
+-- (6) ⚠️ TARGET & ATS theo platform × tháng
+-- target AS (
+--   SELECT platform, sku_code AS sku, target_month AS forecast_month, target_units
+--   FROM ${'${ref("dim_sales_target")}'}
+-- ),
+-- ats AS (
+--   SELECT platform, sku_code AS sku, ats_month AS forecast_month, ats_qty
+--   FROM ${'${ref("dim_channel_ats")}'}
+-- ),
+
+-- (7) FALLBACK demand khi chưa có target: velocity 28d × số ngày trong tháng
+velocity AS (
+  SELECT goods_code AS sku,
+    SAFE_DIVIDE(SUM(IF(flow_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 28 DAY), -qty_delta, 0)), 28.0) AS daily_demand
+  FROM ${ref("master_lecangs_inventory_flow")}
+  WHERE qty_delta < 0 AND business_type_label IN ('2C_order','2B_order')
+  GROUP BY goods_code
+),
+
+grid AS (
+  SELECT
+    o.sku,
+    'ALL'                                      AS platform,   -- ⚠️ đổi thành target.platform khi có (E)/(F)
+    m.forecast_month,
+    m.month_index,
+    o.snapshot_date,
+    o.on_hand_fba, o.on_hand_castlegate, o.on_hand_lecangs, o.on_hand_wfs,
+    o.on_hand_fba + o.on_hand_castlegate + o.on_hand_lecangs + o.on_hand_wfs AS on_hand_us,
+    CAST(0 AS INT64)                           AS vn_stock_qty,        -- ⚠️ vn.vn_stock_qty
+    CAST(0 AS INT64)                           AS po_unscheduled_qty,  -- ⚠️ unsched.po_unscheduled_qty
+    CAST(NULL AS STRING)                       AS po_unscheduled_pos,  -- ⚠️
+    CAST(0 AS INT64)                           AS in_transit_qty,      -- ⚠️ in_transit.in_transit_qty
+    CAST(NULL AS STRING)                       AS in_transit_pos,      -- ⚠️
+    CAST(0 AS INT64)                           AS wip_qty,             -- ⚠️ wip.wip_qty
+    CAST(NULL AS STRING)                       AS wip_pos,             -- ⚠️
+    CAST(NULL AS DATE)                         AS wip_crd_date,        -- ⚠️ wip.earliest_crd
+    CAST(NULL AS INT64)                        AS channel_ats,         -- ⚠️ ats.ats_qty
+    -- demand: ưu tiên target; fallback velocity
+    CAST(CEIL(COALESCE(v.daily_demand,0)
+      * DATE_DIFF(DATE_ADD(m.forecast_month, INTERVAL 1 MONTH), m.forecast_month, DAY)) AS INT64) AS demand_units,
+    COALESCE(v.daily_demand, 0)                AS daily_demand
+  FROM on_hand o
+  CROSS JOIN months m
+  LEFT JOIN velocity v USING (sku)
+  -- LEFT JOIN in_transit USING (sku, forecast_month)
+  -- LEFT JOIN wip        USING (sku, forecast_month)
+  -- LEFT JOIN vn         USING (sku)
+  -- LEFT JOIN unsched    USING (sku)
+  -- LEFT JOIN target     USING (sku, platform, forecast_month)
+  -- LEFT JOIN ats        USING (sku, platform, forecast_month)
+),
+
+-- (8) CÂN ĐỐI CHẠY DỒN.
+--     BASE  = tồn US + đang đi đường + WIP (đã cam kết) - demand
+--     WITHVN = BASE + tồn VN về sau VN_SHIP_MONTHS (kịch bản "quyết ship VN hôm nay")
+running AS (
+  SELECT
+    *,
+    on_hand_us + SUM(in_transit_qty + wip_qty) OVER w - SUM(demand_units) OVER w   AS closing_stock,
+    on_hand_us + SUM(in_transit_qty + wip_qty) OVER w - SUM(demand_units) OVER w
+      + IF(month_index >= ${VN_SHIP_MONTHS}, vn_stock_qty, 0)                      AS closing_stock_with_vn
+  FROM grid
+  WINDOW w AS (PARTITION BY sku, platform ORDER BY month_index
+               ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+)
+
+SELECT
+  sku, platform, forecast_month, month_index, snapshot_date,
+
+  -- ===== TỒN US (theo nguồn) =====
+  on_hand_us, on_hand_fba, on_hand_castlegate, on_hand_lecangs, on_hand_wfs,
+
+  -- ===== CÁC TẦNG CUNG =====
+  in_transit_qty, in_transit_pos,                 -- đã cam kết, về theo ETA
+  wip_qty, wip_pos, wip_crd_date,                 -- đã cam kết, về ≈ CRD + 3 tháng
+  vn_stock_qty,                                   -- đòn bẩy: ship VN → về sau 3 tháng
+  po_unscheduled_qty, po_unscheduled_pos,         -- ⚠️ CHỐNG ĐẶT CHỒNG: đã đặt nhưng chưa có lịch SX
+
+  -- ===== DEMAND & ATS =====
+  channel_ats,
+  demand_units,
+  daily_demand,
+
+  -- ===== KẾT QUẢ =====
+  closing_stock,
+  closing_stock_with_vn,
+  ROUND(SAFE_DIVIDE(closing_stock, NULLIF(daily_demand,0)), 1)          AS closing_days_of_supply,
+  (closing_stock <= 0)                                                  AS is_stockout_month,
+  -- tồn VN có cứu được tháng này không?
+  (closing_stock <= 0 AND closing_stock_with_vn > 0)                    AS vn_stock_rescues_month,
+
+  CASE
+    WHEN closing_stock <= 0                                                        THEN 'STOCKOUT'
+    WHEN daily_demand > 0 AND SAFE_DIVIDE(closing_stock, daily_demand) < ${SAFETY_DAYS} THEN 'CRITICAL'
+    WHEN daily_demand > 0 AND SAFE_DIVIDE(closing_stock, daily_demand) < 30        THEN 'LOW'
+    WHEN daily_demand <= 0 AND closing_stock > 0                                   THEN 'NO_MOVEMENT'
+    ELSE 'OK'
+  END                                                                   AS forecast_status,
+
+  -- ===== HẠN CHÓT =====
+  -- PO mới (đặt từ đầu): cần FULL_LEAD_DAYS. Ship tồn VN: chỉ cần VN_SHIP_MONTHS → cứu được sớm hơn nhiều.
+  DATE_SUB(forecast_month, INTERVAL ${FULL_LEAD_DAYS} DAY)              AS new_po_deadline,
+  DATE_SUB(forecast_month, INTERVAL ${VN_SHIP_MONTHS} MONTH)            AS vn_ship_deadline,
+  (closing_stock <= 0 AND DATE_SUB(forecast_month, INTERVAL ${FULL_LEAD_DAYS} DAY) < CURRENT_DATE())
+                                                                        AS new_po_too_late,
+  (closing_stock <= 0 AND DATE_SUB(forecast_month, INTERVAL ${VN_SHIP_MONTHS} MONTH) < CURRENT_DATE())
+                                                                        AS vn_ship_too_late
+FROM running
