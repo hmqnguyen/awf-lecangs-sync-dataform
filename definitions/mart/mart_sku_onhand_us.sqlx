@@ -25,12 +25,18 @@ lecangs AS (
   GROUP BY 1
 ),
 fba AS (
+  -- Gộp 2 account Amazon (a1 = afw_amazon_master, a2 = afw_amz_a2_master)
   SELECT x.master_sku_id AS sku,
          SUM(i.fulfillable_quantity) AS q,
          SUM(IFNULL(i.inbound_shipped_quantity, 0) + IFNULL(i.inbound_working_quantity, 0)) AS inb
-  FROM ${ref("master_amazon_inventory")} i
+  FROM (
+    SELECT sku, fulfillable_quantity, inbound_shipped_quantity, inbound_working_quantity
+      FROM ${ref("master_amazon_inventory")} WHERE is_latest
+    UNION ALL
+    SELECT sku, fulfillable_quantity, inbound_shipped_quantity, inbound_working_quantity
+      FROM `${dataform.projectConfig.defaultDatabase}.afw_amz_a2_master.master_amazon_inventory` WHERE is_latest
+  ) i
   JOIN ${ref("sku_crosswalk")} x ON x.channel = 'amazon' AND x.channel_sku = i.sku
-  WHERE i.is_latest
   GROUP BY 1
 ),
 castlegate AS (

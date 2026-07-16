@@ -25,8 +25,13 @@ lecangs AS (
   GROUP BY 1
 ),
 amazon AS (
+  -- Gộp 2 account Amazon (a1 + a2)
   SELECT x.master_sku_id AS sku, SUM(o.quantity) AS u
-  FROM ${ref("master_amazon_orders")} o
+  FROM (
+    SELECT sku, quantity, purchase_date FROM ${ref("master_amazon_orders")}
+    UNION ALL
+    SELECT sku, quantity, purchase_date FROM `${dataform.projectConfig.defaultDatabase}.afw_amz_a2_master.master_amazon_orders`
+  ) o
   JOIN ${ref("sku_crosswalk")} x ON x.channel = 'amazon' AND x.channel_sku = o.sku
   WHERE DATE(o.purchase_date) >= DATE_SUB(CURRENT_DATE(), INTERVAL ${WINDOW_DAYS} DAY)
   GROUP BY 1
